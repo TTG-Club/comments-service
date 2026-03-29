@@ -1,0 +1,140 @@
+databaseChangeLog:
+  - changeSet:
+      id: create-comments-table
+      author: ttg
+      changes:
+        - createTable:
+            schemaName: comment
+            tableName: comments
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: section
+                  type: VARCHAR(100)
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: url
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: parent_id
+                  type: UUID
+
+              - column:
+                  name: author_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: author_name_snapshot
+                  type: VARCHAR(255)
+
+              - column:
+                  name: content
+                  type: TEXT
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: status
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: reply_count
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: edited_at
+                  type: TIMESTAMP WITH TIME ZONE
+
+              - column:
+                  name: deleted_at
+                  type: TIMESTAMP WITH TIME ZONE
+
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        # FK на родительский комментарий
+        - addForeignKeyConstraint:
+            baseTableName: comments
+            baseColumnNames: parent_id
+            constraintName: fk_comments_parent
+            referencedTableName: comments
+            referencedColumnNames: id
+            onDelete: CASCADE
+
+        # Индекс для загрузки комментариев страницы
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_section_url
+            columns:
+              - column:
+                  name: section
+              - column:
+                  name: url
+
+        # Индекс для корневых комментариев
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_root
+            columns:
+              - column:
+                  name: section
+              - column:
+                  name: url
+              - column:
+                  name: parent_id
+
+        # Индекс для ответов
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_parent
+            columns:
+              - column:
+                  name: parent_id
+
+        # Индекс для статуса (фильтрация)
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_status
+            columns:
+              - column:
+                  name: status
+
+        # Индекс для сортировки
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_created_at
+            columns:
+              - column:
+                  name: created_at
