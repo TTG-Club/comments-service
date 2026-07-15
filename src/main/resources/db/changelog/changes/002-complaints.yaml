@@ -1,0 +1,84 @@
+databaseChangeLog:
+  - changeSet:
+      id: add-dislike-count-to-comments
+      author: ttg
+      changes:
+        - addColumn:
+            schemaName: comment
+            tableName: comments
+            columns:
+              - column:
+                  name: dislike_count
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+
+        # Индекс для выборки комментариев с жалобами
+        - createIndex:
+            schemaName: comment
+            tableName: comments
+            indexName: idx_comments_dislike_count
+            columns:
+              - column:
+                  name: dislike_count
+
+  - changeSet:
+      id: create-comment-complaints-table
+      author: ttg
+      changes:
+        - createTable:
+            schemaName: comment
+            tableName: comment_complaints
+            columns:
+              - column:
+                  name: id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              - column:
+                  name: comment_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: author_id
+                  type: UUID
+                  constraints:
+                    nullable: false
+
+              - column:
+                  name: created_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false
+
+        # FK на комментарий
+        - addForeignKeyConstraint:
+            baseTableSchemaName: comment
+            baseTableName: comment_complaints
+            baseColumnNames: comment_id
+            constraintName: fk_complaints_comment
+            referencedTableSchemaName: comment
+            referencedTableName: comments
+            referencedColumnNames: id
+            onDelete: CASCADE
+
+        # Одна жалоба от пользователя на комментарий
+        - addUniqueConstraint:
+            schemaName: comment
+            tableName: comment_complaints
+            columnNames: comment_id, author_id
+            constraintName: uq_complaints_comment_author
+
+        # Индекс для подсчёта/выборки жалоб по комментарию
+        - createIndex:
+            schemaName: comment
+            tableName: comment_complaints
+            indexName: idx_complaints_comment
+            columns:
+              - column:
+                  name: comment_id

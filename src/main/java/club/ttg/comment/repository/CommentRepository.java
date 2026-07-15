@@ -28,4 +28,9 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
             String url,
             CommentStatus status
     );
+
+    Page<Comment> findByDislikeCountGreaterThan(
+            int dislikeCount,
+            Pageable pageable
+    );
 }

@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.annotations.UuidGenerator;
 
 import java.time.OffsetDateTime;
 import java.util.Objects;
@@ -26,6 +27,7 @@ import java.util.UUID;
 public class Comment
 {
     @Id
+    @UuidGenerator
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
@@ -54,6 +56,9 @@ public class Comment
     @Column(name = "reply_count", nullable = false)
     private Integer replyCount = 0;
 
+    @Column(name = "dislike_count", nullable = false)
+    private Integer dislikeCount = 0;
+
     @Column(name = "edited_at")
     private OffsetDateTime editedAt;
 
@@ -67,11 +72,6 @@ public class Comment
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
-
-    public boolean isRoot()
-    {
-        return parentId == null;
-    }
 
     public boolean isDeleted()
     {
@@ -109,6 +109,16 @@ public class Comment
         }
 
         replyCount--;
+    }
+
+    public void incrementDislikeCount()
+    {
+        if (dislikeCount == null)
+        {
+            dislikeCount = 0;
+        }
+
+        dislikeCount++;
     }
 
     @Override

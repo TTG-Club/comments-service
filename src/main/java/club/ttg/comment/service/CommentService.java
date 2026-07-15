@@ -3,14 +3,20 @@ package club.ttg.comment.service;
 import club.ttg.comment.dto.request.CreateCommentRequest;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.exception.CommentAccessDeniedException;
+import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.mapper.CommentMapper;
 import club.ttg.comment.model.Comment;
+import club.ttg.comment.model.CommentComplaint;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.repository.CommentComplaintRepository;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,6 +28,7 @@ import java.util.UUID;
 public class CommentService
 {
     private final CommentRepository commentRepository;
+    private final CommentComplaintRepository commentComplaintRepository;
     private final CommentMapper commentMapper;
 
     @Transactional(readOnly = true)
@@ -37,6 +44,60 @@ public class CommentService
                 CommentStatus.PUBLISHED,
                 pageable
         ).map(commentMapper::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<CommentResponse> getAllComments(final Pageable pageable)
+    {
+        final Pageable sortedByNewest = PageRequest.of(
+                pageable.getPageNumber(),
+                pageable.getPageSize(),
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
+
+        return commentRepository.findAll(sortedByNewest).map(commentMapper::toResponse);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<CommentResponse> getDislikedComments(final Pageable pageable)
+    {
+        final Pageable sortedByDislikes = PageRequest.of(
+                pageable.getPageNumber(),
+                pageable.getPageSize(),
+                Sort.by(Sort.Direction.DESC, "dislikeCount")
+        );
+
+        return commentRepository.findByDislikeCountGreaterThan(0, sortedByDislikes)
+                .map(commentMapper::toResponse);
+    }
+
+    @Transactional
+    public CommentResponse dislikeComment(
+            final UUID commentId,
+            final UUID authorId
+    )
+    {
+        final Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
+
+        if (comment.isDeleted())
+        {
+            throw new CommentStateException("Cannot dislike deleted comment");
+        }
+
+        if (commentComplaintRepository.existsByCommentIdAndAuthorId(commentId, authorId))
+        {
+            throw new CommentStateException("You have already disliked this comment");
+        }
+
+        final CommentComplaint complaint = new CommentComplaint();
+        complaint.setCommentId(commentId);
+        complaint.setAuthorId(authorId);
+        commentComplaintRepository.save(complaint);
+
+        comment.incrementDislikeCount();
+
+        return commentMapper.toResponse(commentRepository.save(comment));
     }
 
     @Transactional(readOnly = true)
@@ -125,7 +186,7 @@ public class CommentService
 
         if (comment.isDeleted())
         {
-            throw new IllegalStateException("Comment already deleted");
+            throw new CommentStateException("Comment already deleted");
         }
 
         comment.setContent(normalizeContent(request.getContent()));
@@ -168,12 +229,12 @@ public class CommentService
     {
         if (parent.isDeleted())
         {
-            throw new IllegalStateException("Cannot reply to deleted comment");
+            throw new CommentStateException("Cannot reply to deleted comment");
         }
 
         if (parent.getStatus() != CommentStatus.PUBLISHED)
         {
-            throw new IllegalStateException("Cannot reply to unpublished comment");
+            throw new CommentStateException("Cannot reply to unpublished comment");
         }
     }
 
@@ -184,7 +245,7 @@ public class CommentService
     {
         if (!comment.getAuthorId().equals(authorId))
         {
-            throw new IllegalStateException("You can modify only your own comment");
+            throw new CommentAccessDeniedException("You can modify only your own comment");
         }
     }
 
