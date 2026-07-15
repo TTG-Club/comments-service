@@ -118,7 +118,7 @@ Liquibase применит миграции при старте автомати
 
 ```bash
 ./mvnw clean package
-java -jar target/comment-0.0.1-SNAPSHOT.jar
+java -jar target/comment.ttg.club.jar
 ```
 
 ### Тесты
