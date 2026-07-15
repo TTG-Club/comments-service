@@ -1,5 +1,15 @@
 databaseChangeLog:
   - changeSet:
+      id: create-comment-schema
+      author: ttg
+      changes:
+        - sql:
+            sql: CREATE SCHEMA IF NOT EXISTS comment
+      rollback:
+        - sql:
+            sql: DROP SCHEMA IF EXISTS comment CASCADE
+
+  - changeSet:
       id: create-comments-table
       author: ttg
       changes:
@@ -81,9 +91,11 @@ databaseChangeLog:
 
         # FK на родительский комментарий
         - addForeignKeyConstraint:
+            baseTableSchemaName: comment
             baseTableName: comments
             baseColumnNames: parent_id
             constraintName: fk_comments_parent
+            referencedTableSchemaName: comment
             referencedTableName: comments
             referencedColumnNames: id
             onDelete: CASCADE
