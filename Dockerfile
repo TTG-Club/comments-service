@@ -9,7 +9,7 @@ COPY --link src src
 RUN --mount=type=cache,target=/root/.m2 \
     mvn package -B -DskipTests
 
-RUN mkdir -p target/dependency && (cd target/dependency; jar -xf ../bug.report.ttg.club.jar)
+RUN mkdir -p target/dependency && (cd target/dependency; jar -xf ../comment.ttg.club.jar)
 
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
@@ -22,4 +22,4 @@ COPY --from=build ${DEPENDENCY}/BOOT-INF/lib /app/lib
 COPY --from=build ${DEPENDENCY}/META-INF /app/META-INF
 COPY --from=build ${DEPENDENCY}/BOOT-INF/classes /app
 
-ENTRYPOINT ["java","-cp",".:lib/*","club.ttg.bug.report.BugReportServiceApplication"]
+ENTRYPOINT ["java","-cp",".:lib/*","club.ttg.comment.CommentApplication"]
