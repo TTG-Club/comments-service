@@ -1,6 +1,7 @@
 package club.ttg.comment.exception;
 
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.validation.FieldError;
@@ -30,6 +31,16 @@ public class GlobalExceptionHandler
     public ProblemDetail handleCommentState(final CommentStateException ex)
     {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    /**
+     * Нарушение ограничения БД (например, гонка двойного дизлайка бьётся об уникальный
+     * индекс uq_complaints_comment_author) — это конфликт состояния, а не 500.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ProblemDetail handleDataIntegrityViolation(final DataIntegrityViolationException ex)
+    {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Конфликт: нарушение ограничения целостности");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

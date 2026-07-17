@@ -1,0 +1,48 @@
+databaseChangeLog:
+  - changeSet:
+      id: add-total-reply-count-to-comments
+      author: ttg
+      changes:
+        - addColumn:
+            schemaName: comment
+            tableName: comments
+            columns:
+              - column:
+                  name: total_reply_count
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: backfill-total-reply-count
+      author: ttg
+      comment: >-
+        Число всех опубликованных потомков, достижимых по цепочке опубликованных
+        предков. Ветви под удалённым узлом в счёт не входят: рекурсия идёт только
+        через PUBLISHED-узлы, поэтому DELETED обрывает путь. Удалённые узлы
+        остаются с 0 (в выборках они не участвуют).
+      changes:
+        - sql:
+            dbms: postgresql
+            splitStatements: false
+            sql: >-
+              WITH RECURSIVE subtree AS (
+                  SELECT c.id AS root_id, c.id AS node_id
+                  FROM comment.comments c
+                  WHERE c.status = 'PUBLISHED'
+                  UNION ALL
+                  SELECT s.root_id, child.id
+                  FROM subtree s
+                  JOIN comment.comments child ON child.parent_id = s.node_id
+                  WHERE child.status = 'PUBLISHED'
+              )
+              UPDATE comment.comments t
+              SET total_reply_count = sub.cnt
+              FROM (
+                  SELECT root_id, COUNT(*) - 1 AS cnt
+                  FROM subtree
+                  GROUP BY root_id
+              ) sub
+              WHERE t.id = sub.root_id
+                AND t.total_reply_count <> sub.cnt;

@@ -3,3 +3,5 @@ databaseChangeLog:
       file: db/changelog/changes/001-comments.yaml
   - include:
       file: db/changelog/changes/002-complaints.yaml
+  - include:
+      file: db/changelog/changes/003-total-reply-count.yaml

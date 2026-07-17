@@ -1,6 +1,7 @@
 package club.ttg.comment.controller;
 
 import club.ttg.comment.config.SecurityConfig;
+import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.service.CommentService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -21,6 +22,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -76,6 +78,56 @@ class CommentControllerSecurityTest
         given(commentService.getReplies(any(UUID.class))).willReturn(List.of());
 
         mockMvc.perform(get("/api/v1/comments/" + UUID.randomUUID() + "/replies"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void guestReadsLatestComment() throws Exception
+    {
+        given(commentService.getLatestComment(anyString(), anyString()))
+                .willReturn(Optional.of(new CommentResponse()));
+
+        mockMvc.perform(get("/api/v1/comments/latest")
+                        .param("section", "spells")
+                        .param("url", "/spells/fireball"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void latestReturnsNoContentWhenPageEmpty() throws Exception
+    {
+        given(commentService.getLatestComment(anyString(), anyString())).willReturn(Optional.empty());
+
+        mockMvc.perform(get("/api/v1/comments/latest")
+                        .param("section", "spells")
+                        .param("url", "/spells/empty"))
+                .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void guestReadsCommentById() throws Exception
+    {
+        given(commentService.getComment(any(UUID.class))).willReturn(new CommentResponse());
+
+        mockMvc.perform(get("/api/v1/comments/" + UUID.randomUUID()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void byIdPatternDoesNotExposeModeration() throws Exception
+    {
+        // /moderation — не UUID, поэтому by-id regex его не матчит, и он остаётся защищённым.
+        mockMvc.perform(get("/api/v1/comments/moderation"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void guestReadsCommentByIdWithQueryString() throws Exception
+    {
+        // Path-pattern матчит только путь: query-параметр (например, cache-buster) не должен ломать доступ.
+        given(commentService.getComment(any(UUID.class))).willReturn(new CommentResponse());
+
+        mockMvc.perform(get("/api/v1/comments/" + UUID.randomUUID() + "?v=123"))
                 .andExpect(status().isOk());
     }
 

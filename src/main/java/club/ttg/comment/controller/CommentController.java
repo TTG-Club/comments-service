@@ -137,6 +137,24 @@ public class CommentController
         return commentService.getReplies(parentId);
     }
 
+    @GetMapping("/{commentId}")
+    @Operation(
+            summary = "Комментарий по id",
+            description = "Возвращает один опубликованный комментарий по его id (для перехода по прямой "
+                    + "ссылке). Удалённый или несуществующий комментарий — 404."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Комментарий"),
+            @ApiResponse(responseCode = "404", description = "Комментарий не найден", content = @Content)
+    })
+    public CommentResponse getComment(
+            @Parameter(description = "ID комментария", required = true)
+            @PathVariable final UUID commentId
+    )
+    {
+        return commentService.getComment(commentId);
+    }
+
     @GetMapping("/count")
     @Operation(
             summary = "Число комментариев страницы",
@@ -151,6 +169,29 @@ public class CommentController
     )
     {
         return ResponseEntity.ok(commentService.getCommentCount(section, url));
+    }
+
+    @GetMapping("/latest")
+    @Operation(
+            summary = "Последний комментарий страницы",
+            description = "Возвращает самый свежий опубликованный комментарий страницы с учётом ответов "
+                    + "(для свёрнутого блока). Если комментарий — ответ, в поле parentAuthorName будет имя "
+                    + "автора родителя (кому отвечали). Если комментариев нет — 204 No Content."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Последний комментарий"),
+            @ApiResponse(responseCode = "204", description = "На странице ещё нет комментариев", content = @Content)
+    })
+    public ResponseEntity<CommentResponse> getLatestComment(
+            @Parameter(description = "Раздел страницы", example = "blog", required = true)
+            @RequestParam final String section,
+            @Parameter(description = "URL страницы", example = "/posts/hello-world", required = true)
+            @RequestParam final String url
+    )
+    {
+        return commentService.getLatestComment(section, url)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.noContent().build());
     }
 
     @PostMapping

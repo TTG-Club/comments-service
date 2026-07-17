@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -43,7 +44,7 @@ public class CommentService
                 normalize(url),
                 CommentStatus.PUBLISHED,
                 pageable
-        ).map(commentMapper::toResponse);
+        ).map(this::buildResponse);
     }
 
     @Transactional(readOnly = true)
@@ -95,20 +96,40 @@ public class CommentService
         complaint.setAuthorId(authorId);
         commentComplaintRepository.save(complaint);
 
-        comment.incrementDislikeCount();
+        final int dislikesBefore = comment.getDislikeCount() == null ? 0 : comment.getDislikeCount();
+        commentRepository.incrementDislikeCount(commentId);
 
-        return commentMapper.toResponse(commentRepository.save(comment));
+        // Сущность не трогаем (иначе её dirty-update перезатёр бы атомарный инкремент);
+        // актуальное значение проставляем прямо в DTO.
+        final CommentResponse response = buildResponse(comment);
+        response.setDislikeCount(dislikesBefore + 1);
+        return response;
     }
 
     @Transactional(readOnly = true)
     public List<CommentResponse> getReplies(final UUID parentId)
     {
-        return commentMapper.toResponseList(
-                commentRepository.findByParentIdAndStatusOrderByCreatedAtAsc(
+        return commentRepository.findByParentIdAndStatusOrderByCreatedAtAsc(
                         parentId,
                         CommentStatus.PUBLISHED
                 )
-        );
+                .stream()
+                .map(this::buildResponse)
+                .toList();
+    }
+
+    /**
+     * Один опубликованный комментарий по id (для перехода по прямой ссылке). Удалённый или
+     * несуществующий — 404. Фронт по {@code parentId} поднимается по цепочке к корню.
+     */
+    @Transactional(readOnly = true)
+    public CommentResponse getComment(final UUID commentId)
+    {
+        final Comment comment = commentRepository.findById(commentId)
+                .filter(candidate -> candidate.getStatus() == CommentStatus.PUBLISHED)
+                .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
+
+        return buildResponse(comment);
     }
 
     @Transactional(readOnly = true)
@@ -122,6 +143,50 @@ public class CommentService
                 normalize(url),
                 CommentStatus.PUBLISHED
         );
+    }
+
+    /**
+     * Самый свежий опубликованный комментарий страницы с учётом ответов (для свёрнутого
+     * блока на фронте). {@code parentAuthorName} заполняется, только если это ответ —
+     * тогда в нём имя автора родителя (кому отвечали) для подписи в превью.
+     */
+    @Transactional(readOnly = true)
+    public Optional<CommentResponse> getLatestComment(
+            final String section,
+            final String url
+    )
+    {
+        return commentRepository.findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+                normalize(section),
+                normalize(url),
+                CommentStatus.PUBLISHED
+        ).map(this::buildResponse);
+    }
+
+    /**
+     * Маппит комментарий в ответ и проставляет {@code parentAuthorName} — имя автора родителя
+     * (кому отвечали), либо null для корневого. Для родителя нужен точечный поиск по id;
+     * у корней ({@code parentId == null}) запрос не выполняется, а для набора ответов одного
+     * родителя повторные вызовы обслуживаются кэшем персистентности в пределах транзакции.
+     */
+    private CommentResponse buildResponse(final Comment comment)
+    {
+        final CommentResponse response = commentMapper.toResponse(comment);
+        response.setParentAuthorName(resolveParentAuthorName(comment.getParentId()));
+        return response;
+    }
+
+    private String resolveParentAuthorName(final UUID parentId)
+    {
+        if (parentId == null)
+        {
+            return null;
+        }
+
+        return commentRepository.findById(parentId)
+                .filter(parent -> parent.getStatus() == CommentStatus.PUBLISHED)
+                .map(Comment::getAuthorNameSnapshot)
+                .orElse(null);
     }
 
     @Transactional
@@ -140,7 +205,7 @@ public class CommentService
         );
         comment.setStatus(CommentStatus.PUBLISHED);
 
-        return commentMapper.toResponse(commentRepository.save(comment));
+        return buildResponse(commentRepository.save(comment));
     }
 
     @Transactional
@@ -166,10 +231,13 @@ public class CommentService
         );
         reply.setStatus(CommentStatus.PUBLISHED);
 
-        parent.incrementReplyCount();
-        commentRepository.save(parent);
+        final Comment savedReply = commentRepository.save(reply);
 
-        return commentMapper.toResponse(commentRepository.save(reply));
+        // Прямых детей у родителя стало на 1 больше; всем предкам по цепочке +1 к числу потомков.
+        commentRepository.addToReplyCount(parentId, 1);
+        adjustAncestorTotals(parentId, 1);
+
+        return buildResponse(savedReply);
     }
 
     @Transactional
@@ -192,7 +260,7 @@ public class CommentService
         comment.setContent(normalizeContent(request.getContent()));
         comment.markAsEdited();
 
-        return commentMapper.toResponse(commentRepository.save(comment));
+        return buildResponse(commentRepository.save(comment));
     }
 
     @Transactional
@@ -211,18 +279,51 @@ public class CommentService
             return;
         }
 
+        // Из счётчиков предков уходит сам комментарий и всё его достижимое поддерево.
+        final int removedFromTotals = 1 + safeTotalReplyCount(comment);
+
         comment.markAsDeleted();
         commentRepository.save(comment);
 
         if (comment.getParentId() != null)
         {
-            commentRepository.findById(comment.getParentId())
-                    .ifPresent(parent ->
-                    {
-                        parent.decrementReplyCount();
-                        commentRepository.save(parent);
-                    });
+            commentRepository.addToReplyCount(comment.getParentId(), -1);
         }
+
+        adjustAncestorTotals(comment.getParentId(), -removedFromTotals);
+    }
+
+    /**
+     * Меняет {@code totalReplyCount} у всех предков, начиная с {@code startParentId} и выше,
+     * на {@code delta}. Обход прекращается на первом удалённом предке: поддерево под ним уже
+     * исключено из счётчиков вышестоящих узлов (при его удалении), поэтому идти выше нельзя —
+     * иначе изменение задвоится. Это же покрывает ответы на осиротевший (но опубликованный)
+     * комментарий под удалённым родителем.
+     */
+    private void adjustAncestorTotals(
+            final UUID startParentId,
+            final int delta
+    )
+    {
+        UUID currentId = startParentId;
+
+        while (currentId != null)
+        {
+            final Comment ancestor = commentRepository.findById(currentId).orElse(null);
+            if (ancestor == null || ancestor.isDeleted())
+            {
+                return;
+            }
+
+            commentRepository.addToTotalReplyCount(ancestor.getId(), delta);
+
+            currentId = ancestor.getParentId();
+        }
+    }
+
+    private int safeTotalReplyCount(final Comment comment)
+    {
+        return comment.getTotalReplyCount() == null ? 0 : comment.getTotalReplyCount();
     }
 
     private void validateParentForReply(final Comment parent)

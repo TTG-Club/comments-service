@@ -25,6 +25,11 @@ public class CommentResponse
     @Schema(description = "ID родительского комментария (null — корневой)")
     private UUID parentId;
 
+    @Schema(description = "Имя автора родительского комментария — кому отвечали. "
+            + "Заполняется для ответов (parentId != null), если родитель опубликован; "
+            + "null для корневых. В модераторских списках не заполняется.")
+    private String parentAuthorName;
+
     @Schema(description = "ID автора")
     private UUID authorId;
 
@@ -37,8 +42,11 @@ public class CommentResponse
     @Schema(description = "Статус комментария", example = "PUBLISHED")
     private CommentStatus status;
 
-    @Schema(description = "Число ответов", example = "0")
+    @Schema(description = "Число прямых ответов", example = "0")
     private Integer replyCount;
+
+    @Schema(description = "Число всех потомков (ответы и ответы на них на любой глубине)", example = "0")
+    private Integer totalReplyCount;
 
     @Schema(description = "Число жалоб (дизлайков)", example = "0")
     private Integer dislikeCount;

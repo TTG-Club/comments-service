@@ -44,7 +44,14 @@ public class SecurityConfig
      */
     private static final String PUBLIC_ROOT_COMMENTS_PATH = "/api/v1/comments";
     private static final String PUBLIC_COMMENTS_COUNT_PATH = "/api/v1/comments/count";
+    private static final String PUBLIC_COMMENTS_LATEST_PATH = "/api/v1/comments/latest";
     private static final String PUBLIC_COMMENT_REPLIES_PATTERN = "/api/v1/comments/*/replies";
+
+    // Только GET одиночного комментария по UUID. Regex-переменная пути (матчит лишь путь,
+    // не строку запроса), а не /*, чтобы не открыть публично /moderation и любой будущий
+    // одно-сегментный путь под /api/v1/comments.
+    private static final String PUBLIC_COMMENT_BY_ID_PATTERN =
+            "/api/v1/comments/{id:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}}";
 
     private static final int MIN_SECRET_LENGTH_BYTES = 32;
 
@@ -60,8 +67,10 @@ public class SecurityConfig
                                 HttpMethod.GET,
                                 PUBLIC_ROOT_COMMENTS_PATH,
                                 PUBLIC_COMMENTS_COUNT_PATH,
+                                PUBLIC_COMMENTS_LATEST_PATH,
                                 PUBLIC_COMMENT_REPLIES_PATTERN
                         ).permitAll()
+                        .requestMatchers(HttpMethod.GET, PUBLIC_COMMENT_BY_ID_PATTERN).permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->

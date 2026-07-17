@@ -18,6 +18,7 @@ public interface CommentMapper
     @Mapping(target = "authorNameSnapshot", source = "authorName")
     @Mapping(target = "status", expression = "java(CommentStatus.PUBLISHED)")
     @Mapping(target = "replyCount", constant = "0")
+    @Mapping(target = "totalReplyCount", constant = "0")
     @Mapping(target = "dislikeCount", constant = "0")
     @Mapping(target = "editedAt", ignore = true)
     @Mapping(target = "deletedAt", ignore = true)
@@ -33,6 +34,7 @@ public interface CommentMapper
     @Mapping(target = "authorNameSnapshot", source = "authorName")
     @Mapping(target = "status", expression = "java(CommentStatus.PUBLISHED)")
     @Mapping(target = "replyCount", constant = "0")
+    @Mapping(target = "totalReplyCount", constant = "0")
     @Mapping(target = "dislikeCount", constant = "0")
     @Mapping(target = "editedAt", ignore = true)
     @Mapping(target = "deletedAt", ignore = true)
@@ -48,6 +50,7 @@ public interface CommentMapper
     );
 
     @Mapping(target = "authorName", source = "authorNameSnapshot")
+    @Mapping(target = "parentAuthorName", ignore = true)
     CommentResponse toResponse(Comment comment);
 
     List<CommentResponse> toResponseList(List<Comment> comments);

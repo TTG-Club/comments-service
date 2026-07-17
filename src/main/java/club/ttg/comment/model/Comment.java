@@ -56,6 +56,9 @@ public class Comment
     @Column(name = "reply_count", nullable = false)
     private Integer replyCount = 0;
 
+    @Column(name = "total_reply_count", nullable = false)
+    private Integer totalReplyCount = 0;
+
     @Column(name = "dislike_count", nullable = false)
     private Integer dislikeCount = 0;
 
@@ -88,37 +91,6 @@ public class Comment
         status = CommentStatus.DELETED;
         deletedAt = OffsetDateTime.now();
         content = "";
-    }
-
-    public void incrementReplyCount()
-    {
-        if (replyCount == null)
-        {
-            replyCount = 0;
-        }
-
-        replyCount++;
-    }
-
-    public void decrementReplyCount()
-    {
-        if (replyCount == null || replyCount == 0)
-        {
-            replyCount = 0;
-            return;
-        }
-
-        replyCount--;
-    }
-
-    public void incrementDislikeCount()
-    {
-        if (dislikeCount == null)
-        {
-            dislikeCount = 0;
-        }
-
-        dislikeCount++;
     }
 
     @Override
