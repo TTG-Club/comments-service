@@ -20,10 +20,10 @@ spring:
       hibernate:
         default_schema: comment
 
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: http://localhost:8081
-          jwk-set-uri: http://localhost:8081/oauth2/jwks
+
+# Токены выпускает auth-service и подписывает симметричным HMAC-секретом.
+# Тот же секрет валидирует subscriber-service (AUTH_SERVICE_JWT_SECRET) — значение общее.
+# JWKS/issuer-uri здесь неприменимы: auth-service не публикует набор ключей и не проставляет claim iss.
+auth-service:
+  jwt-secret: ${AUTH_SERVICE_JWT_SECRET}
 

@@ -1,21 +1,29 @@
 package club.ttg.comment.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.List;
 
 @Configuration
+@EnableWebSecurity
 public class SecurityConfig
 {
     private static final String[] SWAGGER_WHITELIST = {
@@ -29,6 +37,17 @@ public class SecurityConfig
     private static final String MODERATION_PATH = "/api/v1/comments/moderation";
     private static final String MODERATION_PATH_PATTERN = "/api/v1/comments/moderation/**";
 
+    /**
+     * Чтение комментариев публично: гость должен видеть обсуждение и плашку «войдите,
+     * чтобы ответить». Пути перечислены точечно, а не шаблоном /api/v1/comments/**,
+     * чтобы никакой из них не мог перекрыть модераторские эндпоинты.
+     */
+    private static final String PUBLIC_ROOT_COMMENTS_PATH = "/api/v1/comments";
+    private static final String PUBLIC_COMMENTS_COUNT_PATH = "/api/v1/comments/count";
+    private static final String PUBLIC_COMMENT_REPLIES_PATTERN = "/api/v1/comments/*/replies";
+
+    private static final int MIN_SECRET_LENGTH_BYTES = 32;
+
     @Bean
     public SecurityFilterChain securityFilterChain(final HttpSecurity http) {
         http
@@ -37,6 +56,12 @@ public class SecurityConfig
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(SWAGGER_WHITELIST).permitAll()
                         .requestMatchers(HttpMethod.GET, MODERATION_PATH, MODERATION_PATH_PATTERN).hasRole("MODERATOR")
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                PUBLIC_ROOT_COMMENTS_PATH,
+                                PUBLIC_COMMENTS_COUNT_PATH,
+                                PUBLIC_COMMENT_REPLIES_PATTERN
+                        ).permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->
@@ -46,8 +71,73 @@ public class SecurityConfig
     }
 
     /**
+     * Токены выпускает auth-service, подписывая их общим секретом через jjwt:
+     * {@code Keys.hmacShaKeyFor(secret)} + {@code signWith(key)}. Алгоритм там не задаётся
+     * явно — jjwt выводит его из длины секрета, поэтому здесь применяется то же правило.
+     * Захардкоженный HS256 отверг бы токен, подписанный 64-байтным секретом (HS512),
+     * с ошибкой «Another algorithm expected».
+     * <p>
+     * Валидатор issuer не подключается сознательно: auth-service не проставляет claim
+     * {@code iss}, поэтому проверка issuer отвергала бы все токены. Срок действия
+     * ({@code exp}) проверяется валидаторами NimbusJwtDecoder по умолчанию.
+     */
+    @Bean
+    public JwtDecoder jwtDecoder(@Value("${auth-service.jwt-secret}") final String secret)
+    {
+        final byte[] keyBytes = secret.getBytes(StandardCharsets.UTF_8);
+
+        if (keyBytes.length < MIN_SECRET_LENGTH_BYTES)
+        {
+            throw new IllegalStateException(
+                    "auth-service.jwt-secret is too short. Current length: " + keyBytes.length
+                            + " bytes. Minimum required length for HS256 is " + MIN_SECRET_LENGTH_BYTES + " bytes."
+            );
+        }
+
+        final MacAlgorithm macAlgorithm = resolveMacAlgorithm(keyBytes.length);
+
+        return NimbusJwtDecoder
+                .withSecretKey(new SecretKeySpec(keyBytes, jcaAlgorithmName(macAlgorithm)))
+                .macAlgorithm(macAlgorithm)
+                .build();
+    }
+
+    /** Повторяет выбор алгоритма в jjwt {@code Keys.hmacShaKeyFor}: по длине ключа. */
+    private static MacAlgorithm resolveMacAlgorithm(final int secretLengthBytes)
+    {
+        final int secretLengthBits = secretLengthBytes * 8;
+
+        if (secretLengthBits >= 512)
+        {
+            return MacAlgorithm.HS512;
+        }
+
+        if (secretLengthBits >= 384)
+        {
+            return MacAlgorithm.HS384;
+        }
+
+        return MacAlgorithm.HS256;
+    }
+
+    private static String jcaAlgorithmName(final MacAlgorithm macAlgorithm)
+    {
+        if (MacAlgorithm.HS512.equals(macAlgorithm))
+        {
+            return "HmacSHA512";
+        }
+
+        if (MacAlgorithm.HS384.equals(macAlgorithm))
+        {
+            return "HmacSHA384";
+        }
+
+        return "HmacSHA256";
+    }
+
+    /**
      * Извлекает роли из claim "roles" JWT и преобразует их в authorities вида ROLE_*.
-     * Если структура токена иная (например, realm_access.roles), поправьте здесь имя claim.
+     * auth-service кладёт туда плоский список имён ролей (ADMIN, MODERATOR, USER).
      */
     private JwtAuthenticationConverter jwtAuthenticationConverter()
     {
