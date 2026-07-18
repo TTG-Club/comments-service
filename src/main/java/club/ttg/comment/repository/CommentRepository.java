@@ -70,6 +70,16 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     );
 
     /**
+     * Все комментарии автора для модераторской выдачи — намеренно без фильтра по статусу,
+     * как и {@code findAll} в общей ленте модерации: администратору в карточке пользователя
+     * нужно видеть и DELETED, и HIDDEN_BY_BAN, а не только живые.
+     */
+    Page<Comment> findByAuthorId(
+            UUID authorId,
+            Pageable pageable
+    );
+
+    /**
      * Скрывает все опубликованные комментарии автора при его блокировке. Текст не трогается —
      * при разблокировке он возвращается как есть.
      * <p>

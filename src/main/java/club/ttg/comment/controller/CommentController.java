@@ -64,19 +64,28 @@ public class CommentController
     @Operation(
             summary = "Все комментарии (модерация)",
             description = "Возвращает все комментарии независимо от статуса, постранично, "
-                    + "отсортированные от самого нового к старому. Доступно модератору и администратору."
+                    + "отсортированные от самого нового к старому. Доступно модератору и администратору. "
+                    + "Необязательный authorId сужает выдачу до комментариев одного автора — для карточки "
+                    + "пользователя в админке. Статусы не фильтруются: удалённые (DELETED) и скрытые "
+                    + "баном (HIDDEN_BY_BAN) тоже возвращаются, вместе с section и url страницы, "
+                    + "где комментарий оставлен."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Страница комментариев"),
+            @ApiResponse(responseCode = "400", description = "authorId не является UUID", content = @Content),
             @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
             @ApiResponse(responseCode = "403", description = "Недостаточно прав", content = @Content)
     })
     public Page<CommentResponse> getAllComments(
+            @Parameter(description = "ID автора — тот же UUID, что и клейм sub в JWT. "
+                    + "Без параметра возвращается вся лента модерации.",
+                    example = "6b1f8f6e-6f2a-4a5e-9c4d-2f1b3c4d5e6f")
+            @RequestParam(required = false) final UUID authorId,
             @Parameter(description = "Параметры пагинации (page, size)")
             @PageableDefault(size = 20) final Pageable pageable
     )
     {
-        return commentService.getAllComments(pageable);
+        return commentService.getAllComments(authorId, pageable);
     }
 
     @GetMapping("/moderation/disliked")
@@ -337,6 +346,32 @@ public class CommentController
     {
         commentService.deleteComment(commentId, extractUserId(jwt), canModerate(jwt));
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{commentId}/restore")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(
+            summary = "Восстановить удалённый комментарий",
+            description = "Возвращает удалённый комментарий (DELETED) в опубликованные. "
+                    + "Доступно модератору и администратору. Восстанавливается один узел — ответы "
+                    + "под ним и так остались опубликованными и снова становятся видны вместе с ним. "
+                    + "Комментарий в любом другом статусе (в том числе скрытый баном автора) — 409: "
+                    + "скрытие баном снимается разблокировкой автора в auth-service."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Комментарий восстановлен"),
+            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
+            @ApiResponse(responseCode = "403", description = "Недостаточно прав", content = @Content),
+            @ApiResponse(responseCode = "404", description = "Комментарий не найден", content = @Content),
+            @ApiResponse(responseCode = "409", description = "Комментарий не в статусе DELETED", content = @Content)
+    })
+    public CommentResponse restoreComment(
+            @Parameter(description = "ID комментария", required = true)
+            @PathVariable final UUID commentId,
+            @Parameter(hidden = true) @AuthenticationPrincipal final Jwt jwt
+    )
+    {
+        return commentService.restoreComment(commentId, canModerate(jwt));
     }
 
     private UUID extractUserId(final Jwt jwt)

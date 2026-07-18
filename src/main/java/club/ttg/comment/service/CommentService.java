@@ -48,8 +48,20 @@ public class CommentService
         ).map(this::buildResponse);
     }
 
+    /**
+     * Лента модерации: все комментарии независимо от статуса, от новых к старым.
+     * {@code authorId == null} — вся лента (поведение до появления фильтра, на нём держится
+     * страница модерации); иначе только комментарии этого автора, для карточки пользователя
+     * в админке.
+     * <p>
+     * Фильтра по статусу нет ни в одной из веток сознательно: и удалённые, и скрытые баном
+     * должны быть видны модератору — группировку по статусам делает фронт.
+     */
     @Transactional(readOnly = true)
-    public Page<CommentResponse> getAllComments(final Pageable pageable)
+    public Page<CommentResponse> getAllComments(
+            final UUID authorId,
+            final Pageable pageable
+    )
     {
         final Pageable sortedByNewest = PageRequest.of(
                 pageable.getPageNumber(),
@@ -57,7 +69,11 @@ public class CommentService
                 Sort.by(Sort.Direction.DESC, "createdAt")
         );
 
-        return commentRepository.findAll(sortedByNewest).map(this::buildResponse);
+        final Page<Comment> comments = authorId == null
+                ? commentRepository.findAll(sortedByNewest)
+                : commentRepository.findByAuthorId(authorId, sortedByNewest);
+
+        return comments.map(this::buildResponse);
     }
 
     @Transactional(readOnly = true)
@@ -302,8 +318,9 @@ public class CommentService
      * удаляет только свой; модератор и администратор ({@code canModerate == true}) — любой.
      * <p>
      * Удаление мягкое во всём: строка и её текст остаются в базе, публично не отдаются нигде,
-     * но видны модератору в {@code /moderation}. Восстановления «для пользователя» при этом нет —
-     * снять статус DELETED через API нельзя, в том числе разблокировкой автора.
+     * но видны модератору в {@code /moderation}. Отменить удаление может только модератор или
+     * администратор — через {@link #restoreComment}; ни автор, ни разблокировка автора статус
+     * DELETED не снимают.
      */
     @Transactional
     public void deleteComment(
@@ -345,6 +362,66 @@ public class CommentService
         }
 
         adjustAncestorTotals(comment.getParentId(), -removedFromTotals);
+    }
+
+    /**
+     * Возвращает удалённый комментарий в выдачу (DELETED → PUBLISHED). Доступно только модератору
+     * и администратору: обычный пользователь удаление не отменяет.
+     * <p>
+     * Восстанавливается ровно один узел. Ответы под ним отдельного возврата не требуют — они
+     * остались PUBLISHED, а невидимыми их делал обход дерева от корня, поэтому возврат узла
+     * поднимает и всю ветку под ним.
+     * <p>
+     * Статус, отличный от DELETED, — конфликт (409), а не «уже восстановлен»: у HIDDEN_BY_BAN
+     * причина скрытия другая (бан автора), и снимать её должна разблокировка в auth-service,
+     * иначе следующая же синхронизация вернула бы комментарий обратно в скрытые. REJECTED и SPAM
+     * — решения модерации, которые не следует отменять ручкой «восстановить удалённое».
+     * <p>
+     * Счётчики восстанавливаются полным пересчётом, как при разбане, а не дельтой: сохранённый
+     * в удалённой строке {@code totalReplyCount} успел устареть (пока узел был удалён, ответы
+     * под ним могли удалять — обход предков останавливается на первом удалённом, и до этой
+     * строки не доходил), поэтому симметричное сложение задвоило бы или недосчитало. Пересчёт
+     * с нуля идемпотентен и заодно чинит уже накопленное расхождение. Он дороже дельты, но
+     * восстановление — редкая ручная операция модератора.
+     * <p>
+     * Два следствия, о которых стоит знать вызывающему. Во-первых, если родитель комментария
+     * удалён, восстановленный ответ останется невидимым на странице: обход дерева идёт от корня
+     * и обрывается на удалённом узле. Вернуть ветку целиком можно, восстановив её верхний
+     * удалённый узел. Во-вторых, комментарий, удалённый до бана автора, скрытие при бане не
+     * затронуло (оно берёт только PUBLISHED), поэтому его восстановление сделает комментарий
+     * заблокированного автора видимым — состояния банов сервис у себя не хранит и проверить
+     * его не может.
+     */
+    @Transactional
+    public CommentResponse restoreComment(
+            final UUID commentId,
+            final boolean canModerate
+    )
+    {
+        if (!canModerate)
+        {
+            throw new CommentAccessDeniedException("Only moderator or administrator can restore comments");
+        }
+
+        final Comment comment = commentRepository.findById(commentId)
+                .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
+
+        if (comment.getStatus() != CommentStatus.DELETED)
+        {
+            throw new CommentStateException("Comment is not deleted, current status: " + comment.getStatus());
+        }
+
+        comment.markAsRestored();
+        commentRepository.save(comment);
+
+        recalculateReplyCounters();
+
+        // Пересчёт очищает контекст персистентности (clearAutomatically), поэтому сущность выше
+        // отсоединена и хранит счётчики до пересчёта. Перечитываем, чтобы отдать актуальные.
+        final Comment restored = commentRepository.findById(commentId)
+                .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
+
+        return buildResponse(restored);
     }
 
     /**
@@ -393,10 +470,20 @@ public class CommentService
             return 0;
         }
 
-        commentRepository.recalculateReplyCounts();
-        commentRepository.recalculateTotalReplyCounts();
+        recalculateReplyCounters();
 
         return affected;
+    }
+
+    /**
+     * Приводит {@code replyCount} и {@code totalReplyCount} к состоянию дерева. Оба пересчёта
+     * идут парой и всегда в этом порядке — по отдельности они оставили бы счётчики
+     * рассогласованными между собой.
+     */
+    private void recalculateReplyCounters()
+    {
+        commentRepository.recalculateReplyCounts();
+        commentRepository.recalculateTotalReplyCounts();
     }
 
     /**

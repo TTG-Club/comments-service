@@ -23,9 +23,10 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Проверяет массовое скрытие и восстановление комментариев на настоящем PostgreSQL: рекурсивный
- * CTE и {@code UPDATE ... FROM} — синтаксис PostgreSQL, на встроенной БД их не проверить.
- * Схему накатывает Liquibase теми же миграциями, что и в проде.
+ * Проверяет смену статусов и следующий за ней пересчёт счётчиков на настоящем PostgreSQL:
+ * массовое скрытие/восстановление при бане и точечное восстановление удалённого комментария
+ * модератором. Рекурсивный CTE и {@code UPDATE ... FROM} — синтаксис PostgreSQL, на встроенной
+ * БД их не проверить. Схему накатывает Liquibase теми же миграциями, что и в проде.
  * <p>
  * Без Docker тест пропускается (Testcontainers не сможет поднять контейнер) — «пропущен» и
  * «пройден» в отчёте не одно и то же.
@@ -200,6 +201,82 @@ class CommentBanVisibilityIntegrationTest
 
         assertThat(reload(root).getReplyCount()).isEqualTo(1);
         assertThat(reload(root).getTotalReplyCount()).isEqualTo(1);
+    }
+
+    /**
+     * Точечное восстановление модератором: удаление ветки и её возврат должны привести счётчики
+     * ровно к исходным значениям. Восстанавливается только сам узел — ответы под ним остались
+     * PUBLISHED и снова попадают в счёт вместе с ним.
+     * <p>
+     * Дерево: root → replyA → replyB, удаляется и возвращается replyA.
+     */
+    @Test
+    void countersReturnToOriginalValuesAfterDeleteAndRestore()
+    {
+        final Comment root = save(comment(otherAuthorId, null, CommentStatus.PUBLISHED, "корень"));
+        final Comment replyA = save(comment(otherAuthorId, root.getId(), CommentStatus.PUBLISHED, "ответ A"));
+        final Comment replyB = save(comment(otherAuthorId, replyA.getId(), CommentStatus.PUBLISHED, "ответ B"));
+
+        commentRepository.recalculateReplyCounts();
+        commentRepository.recalculateTotalReplyCounts();
+        entityManager.clear();
+
+        assertThat(reload(root).getReplyCount()).isEqualTo(1);
+        assertThat(reload(root).getTotalReplyCount()).isEqualTo(2);
+
+        commentService.deleteComment(replyA.getId(), otherAuthorId, true);
+        entityManager.clear();
+
+        // Вся ветка уходит из счётчиков корня.
+        assertThat(reload(root).getReplyCount()).isZero();
+        assertThat(reload(root).getTotalReplyCount()).isZero();
+
+        commentService.restoreComment(replyA.getId(), true);
+        entityManager.clear();
+
+        assertThat(statusOf(replyA)).isEqualTo(CommentStatus.PUBLISHED);
+        assertThat(reload(replyA).getDeletedAt()).isNull();
+        assertThat(reload(root).getReplyCount()).isEqualTo(1);
+        assertThat(reload(root).getTotalReplyCount()).isEqualTo(2);
+        assertThat(reload(replyA).getReplyCount()).isEqualTo(1);
+        assertThat(reload(replyA).getTotalReplyCount()).isEqualTo(1);
+        assertThat(reload(replyB).getTotalReplyCount()).isZero();
+    }
+
+    /**
+     * Ради чего пересчёт предпочтён симметричной дельте: пока узел удалён, ответы под ним могут
+     * удалять, и сохранённый в удалённой строке totalReplyCount устаревает (обход предков
+     * останавливается на первом удалённом и до неё не доходит). Сложение вернуло бы корню
+     * поддерево вместе с уже удалённым ответом; пересчёт с нуля даёт согласованные счётчики.
+     */
+    @Test
+    void restoreDoesNotReturnRepliesDeletedWhileNodeWasDeleted()
+    {
+        final Comment root = save(comment(otherAuthorId, null, CommentStatus.PUBLISHED, "корень"));
+        final Comment replyA = save(comment(otherAuthorId, root.getId(), CommentStatus.PUBLISHED, "ответ A"));
+        final Comment replyB = save(comment(otherAuthorId, replyA.getId(), CommentStatus.PUBLISHED, "ответ B"));
+
+        commentRepository.recalculateReplyCounts();
+        commentRepository.recalculateTotalReplyCounts();
+        entityManager.clear();
+
+        commentService.deleteComment(replyA.getId(), otherAuthorId, true);
+        entityManager.clear();
+
+        // replyB удаляют, пока его родитель уже удалён: счётчик в строке replyA остаётся прежним.
+        commentService.deleteComment(replyB.getId(), otherAuthorId, true);
+        entityManager.clear();
+        assertThat(reload(replyA).getTotalReplyCount()).isEqualTo(1);
+
+        commentService.restoreComment(replyA.getId(), true);
+        entityManager.clear();
+
+        // Вернулся только replyA: удалённый replyB в счёт не идёт ни у него, ни у корня.
+        assertThat(reload(root).getReplyCount()).isEqualTo(1);
+        assertThat(reload(root).getTotalReplyCount()).isEqualTo(1);
+        assertThat(reload(replyA).getReplyCount()).isZero();
+        assertThat(reload(replyA).getTotalReplyCount()).isZero();
+        assertThat(statusOf(replyB)).isEqualTo(CommentStatus.DELETED);
     }
 
     private Comment save(final Comment comment)

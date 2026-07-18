@@ -40,6 +40,15 @@ public class SecurityConfig
     private static final String MODERATION_PATH_PATTERN = "/api/v1/comments/moderation/**";
 
     /**
+     * Восстановление удалённого комментария. Лежит не под /moderation (ручка действует над
+     * конкретным комментарием), поэтому модераторским матчером выше не покрывается и нуждается
+     * в собственном правиле: без него запрос попал бы под {@code anyRequest().authenticated()}
+     * и был бы доступен любому вошедшему пользователю. Метод указан явно — POST здесь
+     * единственный, а /{id}/replies под этот шаблон не подпадает.
+     */
+    private static final String RESTORE_PATH_PATTERN = "/api/v1/comments/*/restore";
+
+    /**
      * Чтение комментариев публично: гость должен видеть обсуждение и плашку «войдите,
      * чтобы ответить». Пути перечислены точечно, а не шаблоном /api/v1/comments/**,
      * чтобы никакой из них не мог перекрыть модераторские эндпоинты.
@@ -75,6 +84,8 @@ public class SecurityConfig
                         .requestMatchers(SWAGGER_WHITELIST).permitAll()
                         .requestMatchers(INTERNAL_PATH_PATTERN).permitAll()
                         .requestMatchers(HttpMethod.GET, MODERATION_PATH, MODERATION_PATH_PATTERN)
+                        .hasAnyRole("MODERATOR", "ADMIN")
+                        .requestMatchers(HttpMethod.POST, RESTORE_PATH_PATTERN)
                         .hasAnyRole("MODERATOR", "ADMIN")
                         .requestMatchers(
                                 HttpMethod.GET,

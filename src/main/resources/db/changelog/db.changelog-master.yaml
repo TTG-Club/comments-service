@@ -7,3 +7,5 @@ databaseChangeLog:
       file: db/changelog/changes/003-total-reply-count.yaml
   - include:
       file: db/changelog/changes/004-rate-limits.yaml
+  - include:
+      file: db/changelog/changes/005-comments-author-index.yaml

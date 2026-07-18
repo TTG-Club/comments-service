@@ -100,6 +100,21 @@ public class Comment
         deletedAt = OffsetDateTime.now();
     }
 
+    /**
+     * Возврат мягко удалённого комментария в выдачу модератором. {@code deletedAt} очищается:
+     * строка больше не удалена, и повторное удаление проставит новую отметку времени, а не
+     * оставит старую.
+     * <p>
+     * Ветку ответов трогать не нужно — они и так остались {@link CommentStatus#PUBLISHED},
+     * а невидимыми их делал обход дерева, начинающийся с корня. Возврат узла возвращает
+     * и всё поддерево под ним.
+     */
+    public void markAsRestored()
+    {
+        status = CommentStatus.PUBLISHED;
+        deletedAt = null;
+    }
+
     @Override
     public boolean equals(final Object o)
     {

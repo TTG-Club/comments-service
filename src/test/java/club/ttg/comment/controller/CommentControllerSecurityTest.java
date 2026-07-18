@@ -3,6 +3,7 @@ package club.ttg.comment.controller;
 import club.ttg.comment.config.SecurityConfig;
 import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.exception.CommentAccessDeniedException;
+import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.exception.GlobalExceptionHandler;
 import club.ttg.comment.service.CommentService;
 import io.jsonwebtoken.Jwts;
@@ -33,6 +34,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -191,11 +193,47 @@ class CommentControllerSecurityTest
     @Test
     void moderatorReadsModeration() throws Exception
     {
-        given(commentService.getAllComments(any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
                 .andExpect(status().isOk());
+
+        // Без параметра в сервис уходит null — общая лента, как и до появления фильтра.
+        verify(commentService).getAllComments(eq(null), any(Pageable.class));
+    }
+
+    @Test
+    void adminFiltersModerationByAuthor() throws Exception
+    {
+        final UUID authorId = UUID.randomUUID();
+        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .param("authorId", authorId.toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isOk());
+
+        verify(commentService).getAllComments(eq(authorId), any(Pageable.class));
+    }
+
+    @Test
+    void malformedAuthorIdIsRejected() throws Exception
+    {
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .param("authorId", "не-uuid")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void plainUserCannotFilterModerationByAuthor() throws Exception
+    {
+        // Фильтр не должен становиться лазейкой: правило доступа то же, что и у ленты целиком.
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .param("authorId", UUID.randomUUID().toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"))))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -211,7 +249,7 @@ class CommentControllerSecurityTest
     @Test
     void adminReadsModeration() throws Exception
     {
-        given(commentService.getAllComments(any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
@@ -269,6 +307,67 @@ class CommentControllerSecurityTest
         mockMvc.perform(delete("/api/v1/comments/" + commentId)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"))))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void guestCannotRestoreComment() throws Exception
+    {
+        mockMvc.perform(post("/api/v1/comments/" + UUID.randomUUID() + "/restore"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    /**
+     * Восстановление лежит не под /moderation, поэтому опирается на собственное правило в
+     * SecurityConfig. Без него запрос попал бы под anyRequest().authenticated() и любой
+     * вошедший пользователь возвращал бы себе удалённые комментарии.
+     */
+    @Test
+    void plainUserCannotRestoreComment() throws Exception
+    {
+        mockMvc.perform(post("/api/v1/comments/" + UUID.randomUUID() + "/restore")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"))))
+                .andExpect(status().isForbidden());
+
+        verify(commentService, never()).restoreComment(any(UUID.class), anyBoolean());
+    }
+
+    @Test
+    void moderatorRestoresComment() throws Exception
+    {
+        final UUID commentId = UUID.randomUUID();
+        given(commentService.restoreComment(any(UUID.class), anyBoolean())).willReturn(new CommentResponse());
+
+        mockMvc.perform(post("/api/v1/comments/" + commentId + "/restore")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
+                .andExpect(status().isOk());
+
+        verify(commentService).restoreComment(commentId, true);
+    }
+
+    @Test
+    void adminRestoresComment() throws Exception
+    {
+        // Часть админов сайта имеет только роль ADMIN без MODERATOR, а восстанавливают из админки.
+        final UUID commentId = UUID.randomUUID();
+        given(commentService.restoreComment(any(UUID.class), anyBoolean())).willReturn(new CommentResponse());
+
+        mockMvc.perform(post("/api/v1/comments/" + commentId + "/restore")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isOk());
+
+        verify(commentService).restoreComment(commentId, true);
+    }
+
+    @Test
+    void restoringCommentThatIsNotDeletedIsConflict() throws Exception
+    {
+        final UUID commentId = UUID.randomUUID();
+        given(commentService.restoreComment(eq(commentId), anyBoolean()))
+                .willThrow(new CommentStateException("Comment is not deleted, current status: PUBLISHED"));
+
+        mockMvc.perform(post("/api/v1/comments/" + commentId + "/restore")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
+                .andExpect(status().isConflict());
     }
 
     @Test

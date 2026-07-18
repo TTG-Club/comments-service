@@ -1,0 +1,21 @@
+databaseChangeLog:
+  - changeSet:
+      id: add-comments-author-created-at-index
+      author: ttg
+      comment: >-
+        Выборка комментариев одного автора от новых к старым: карточка пользователя
+        в админке (/moderation?authorId=...). Индекс составной, потому что запрос
+        фильтрует по author_id и сразу сортирует по created_at — с индексом только
+        по author_id понадобилась бы отдельная сортировка отобранных строк.
+        Префикс author_id обслуживает и точечные запросы по автору: счётчик
+        комментариев в профиле, скрытие и восстановление при бане.
+      changes:
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_author_created_at
+            columns:
+              - column:
+                  name: author_id
+              - column:
+                  name: created_at

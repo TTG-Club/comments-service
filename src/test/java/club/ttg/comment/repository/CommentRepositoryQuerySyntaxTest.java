@@ -9,6 +9,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.core.PropertyReferenceException;
+import org.springframework.data.repository.query.parser.PartTree;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
@@ -16,6 +18,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Компилирует все JPQL-запросы {@link CommentRepository} настоящим парсером Hibernate.
@@ -91,6 +94,33 @@ class CommentRepositoryQuerySyntaxTest
         assertThatCode(() -> compile(restoreQuery)).doesNotThrowAnyException();
     }
 
+    /**
+     * Разбирает имена derived-запросов (без {@code @Query}) тем же парсером, что и Spring Data
+     * при создании репозитория. Опечатка в имени свойства — {@code findByAuthorID} вместо
+     * {@code findByAuthorId} — роняет приложение на старте ровно так же, как ошибка в JPQL,
+     * но проверкой выше не ловится: аннотации там нет. Парсер работает по метамодели сущности,
+     * поэтому БД по-прежнему не нужна.
+     */
+    @Test
+    void everyDerivedQueryNameResolvesAgainstEntity()
+    {
+        final List<Method> derived = derivedQueryMethods();
+
+        assertThat(derived).isNotEmpty();
+
+        for (final Method method : derived)
+        {
+            assertThatCode(() -> new PartTree(method.getName(), Comment.class))
+                    .as("Имя derived-запроса %s не разбирается по свойствам Comment", method.getName())
+                    .doesNotThrowAnyException();
+        }
+
+        // Проверка выше зелёная и в том случае, если парсер принимает что угодно, — убеждаемся,
+        // что несуществующее свойство он действительно отвергает.
+        assertThatThrownBy(() -> new PartTree("findByNoSuchProperty", Comment.class))
+                .isInstanceOf(PropertyReferenceException.class);
+    }
+
     private static void compile(final String jpql)
     {
         try (var session = sessionFactory.openSession())
@@ -121,6 +151,21 @@ class CommentRepositoryQuerySyntaxTest
             final Query query = method.getAnnotation(Query.class);
 
             if (query != null && !query.nativeQuery())
+            {
+                methods.add(method);
+            }
+        }
+
+        return methods;
+    }
+
+    private static List<Method> derivedQueryMethods()
+    {
+        final List<Method> methods = new ArrayList<>();
+
+        for (final Method method : CommentRepository.class.getDeclaredMethods())
+        {
+            if (method.getAnnotation(Query.class) == null)
             {
                 methods.add(method);
             }

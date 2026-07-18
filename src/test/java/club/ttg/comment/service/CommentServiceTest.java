@@ -4,6 +4,7 @@ import club.ttg.comment.dto.request.CreateCommentRequest;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.exception.CommentAccessDeniedException;
+import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
@@ -177,6 +178,119 @@ class CommentServiceTest
         verify(commentRepository).addToReplyCount(deletedMiddle.getId(), -1);
         // Обход totalReplyCount остановился на удалённом родителе — корень не тронут.
         verify(commentRepository, never()).addToTotalReplyCount(eq(root.getId()), anyInt());
+    }
+
+    @Test
+    void restoreReturnsDeletedCommentToPublished()
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        comment.setContent("восстанавливаемый текст");
+        comment.markAsDeleted();
+        stubFindById(comment);
+
+        final CommentResponse response = commentService.restoreComment(comment.getId(), true);
+
+        assertThat(comment.getStatus()).isEqualTo(CommentStatus.PUBLISHED);
+        assertThat(comment.isDeleted()).isFalse();
+        // Отметка об удалении снимается: повторное удаление должно проставить новую, а не старую.
+        assertThat(comment.getDeletedAt()).isNull();
+        assertThat(response.getStatus()).isEqualTo(CommentStatus.PUBLISHED);
+        assertThat(response.getContent()).isEqualTo("восстанавливаемый текст");
+    }
+
+    /**
+     * Счётчики после восстановления приводятся полным пересчётом, а не дельтой: сохранённый
+     * в удалённой строке totalReplyCount успел устареть, и симметричное сложение разошлось бы
+     * с деревом.
+     */
+    @Test
+    void restoreRecalculatesCountersInsteadOfApplyingDeltas()
+    {
+        final Comment parent = published(UUID.randomUUID(), null);
+
+        final Comment deleted = published(UUID.randomUUID(), parent.getId());
+        deleted.setTotalReplyCount(3);
+        deleted.markAsDeleted();
+
+        stubFindById(parent, deleted);
+
+        commentService.restoreComment(deleted.getId(), true);
+
+        verify(commentRepository).recalculateReplyCounts();
+        verify(commentRepository).recalculateTotalReplyCounts();
+        verify(commentRepository, never()).addToReplyCount(any(UUID.class), anyInt());
+        verify(commentRepository, never()).addToTotalReplyCount(any(UUID.class), anyInt());
+    }
+
+    /**
+     * Ветку ответов восстановление не трогает: они и так остались PUBLISHED, а невидимыми их
+     * делал обход дерева от корня. Возврат узла поднимает всё поддерево под ним.
+     */
+    @Test
+    void restoreTouchesOnlyTheNodeItself()
+    {
+        final Comment deleted = published(UUID.randomUUID(), null);
+        deleted.markAsDeleted();
+
+        final Comment reply = published(UUID.randomUUID(), deleted.getId());
+
+        stubFindById(deleted, reply);
+
+        commentService.restoreComment(deleted.getId(), true);
+
+        verify(commentRepository).save(deleted);
+        verify(commentRepository, never()).save(reply);
+        assertThat(reply.getStatus()).isEqualTo(CommentStatus.PUBLISHED);
+    }
+
+    @Test
+    void restoreRejectsCommentThatIsNotDeleted()
+    {
+        final Comment live = published(UUID.randomUUID(), null);
+        stubFindById(live);
+
+        assertThatThrownBy(() -> commentService.restoreComment(live.getId(), true))
+                .isInstanceOf(CommentStateException.class);
+    }
+
+    /**
+     * Скрытый баном автора не восстанавливается этой ручкой: причина скрытия другая, снимать её
+     * должна разблокировка в auth-service — иначе следующая синхронизация вернула бы комментарий
+     * обратно в скрытые.
+     */
+    @Test
+    void restoreRejectsCommentHiddenByBan()
+    {
+        final Comment hidden = published(UUID.randomUUID(), null);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+        stubFindById(hidden);
+
+        assertThatThrownBy(() -> commentService.restoreComment(hidden.getId(), true))
+                .isInstanceOf(CommentStateException.class);
+        assertThat(hidden.getStatus()).isEqualTo(CommentStatus.HIDDEN_BY_BAN);
+    }
+
+    @Test
+    void plainUserCannotRestoreComment()
+    {
+        final Comment deleted = published(UUID.randomUUID(), null);
+        deleted.markAsDeleted();
+        stubFindById(deleted);
+
+        // Даже свой удалённый комментарий автор не возвращает — это право модератора.
+        assertThatThrownBy(() -> commentService.restoreComment(deleted.getId(), false))
+                .isInstanceOf(CommentAccessDeniedException.class);
+        assertThat(deleted.isDeleted()).isTrue();
+    }
+
+    @Test
+    void restoreThrowsForMissingComment()
+    {
+        final UUID missingId = UUID.randomUUID();
+        when(commentRepository.findById(missingId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> commentService.restoreComment(missingId, true))
+                .isInstanceOf(EntityNotFoundException.class);
     }
 
     @Test
@@ -371,10 +485,79 @@ class CommentServiceTest
         when(commentRepository.findAll(any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(parent, reply)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
         assertThat(responseFor(page, parent.getId()).getParentAuthorName()).isNull();
+    }
+
+    /**
+     * Без authorId ручка модерации ведёт себя как раньше — общая лента через findAll. Это
+     * обратная совместимость: на ней держится существующая страница модерации.
+     */
+    @Test
+    void moderationListWithoutAuthorGoesThroughUnfilteredQuery()
+    {
+        when(commentRepository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+
+        commentService.getAllComments(null, PageRequest.of(0, 20));
+
+        verify(commentRepository).findAll(any(Pageable.class));
+        verify(commentRepository, never()).findByAuthorId(any(UUID.class), any(Pageable.class));
+    }
+
+    @Test
+    void moderationListWithAuthorFiltersByThatAuthor()
+    {
+        final UUID authorId = UUID.randomUUID();
+        final Comment own = authoredBy(authorId);
+
+        when(commentRepository.findByAuthorId(eq(authorId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(own)));
+
+        final Page<CommentResponse> page = commentService.getAllComments(authorId, PageRequest.of(0, 20));
+
+        assertThat(page.getContent()).singleElement()
+                .extracting(CommentResponse::getAuthorId).isEqualTo(authorId);
+        // Общая лента при заданном фильтре не запрашивается.
+        verify(commentRepository, never()).findAll(any(Pageable.class));
+    }
+
+    /**
+     * Ради чего фильтр и делался: в карточке пользователя админка показывает и удалённые,
+     * и скрытые баном комментарии — со ссылкой на страницу (section + url). Фильтра по статусу
+     * здесь нет, как и в общей ленте модерации.
+     */
+    @Test
+    void moderationListByAuthorKeepsDeletedAndHiddenByBan()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        final Comment live = authoredBy(authorId);
+
+        final Comment deleted = authoredBy(authorId);
+        deleted.setContent("удалённый текст");
+        deleted.markAsDeleted();
+
+        final Comment hidden = authoredBy(authorId);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+
+        when(commentRepository.findByAuthorId(eq(authorId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(live, deleted, hidden)));
+
+        final Page<CommentResponse> page = commentService.getAllComments(authorId, PageRequest.of(0, 20));
+
+        assertThat(page.getContent()).extracting(CommentResponse::getStatus)
+                .containsExactlyInAnyOrder(
+                        CommentStatus.PUBLISHED,
+                        CommentStatus.DELETED,
+                        CommentStatus.HIDDEN_BY_BAN
+                );
+
+        // Ссылка на страницу, где комментарий оставлен, и текст удалённого — то, что нужно админке.
+        assertThat(responseFor(page, deleted.getId()).getContent()).isEqualTo("удалённый текст");
+        assertThat(responseFor(page, deleted.getId()).getSection()).isEqualTo("blog");
+        assertThat(responseFor(page, deleted.getId()).getUrl()).isEqualTo("/posts/x");
     }
 
     /**
@@ -392,7 +575,7 @@ class CommentServiceTest
         when(commentRepository.findAll(any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(deleted)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, deleted.getId()).getContent()).isEqualTo("удалённый текст");
         assertThat(responseFor(page, deleted.getId()).getStatus()).isEqualTo(CommentStatus.DELETED);
