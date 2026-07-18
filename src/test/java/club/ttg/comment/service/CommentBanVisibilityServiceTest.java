@@ -114,11 +114,13 @@ class CommentBanVisibilityServiceTest
 
     /**
      * Скрытый баном комментарий модератор видит в общем списке и может удалить. В счётчики
-     * предков он уже не входит (пересчёт при скрытии убрал его вместе с поддеревом), поэтому
-     * удаление не должно вычитать его повторно — иначе счётчики предков «уедут» вниз.
+     * предков он не входил (пересчёт при скрытии убрал его вместе с поддеревом), поэтому
+     * дельты неприменимы — вычитание задвоило бы. Но и просто пропустить пересчёт нельзя:
+     * HIDDEN_BY_BAN был барьером, а DELETED для счётчиков проницаем — опубликованные ответы
+     * под узлом возвращаются в счётчики предков через надгробие. Отсюда полный пересчёт.
      */
     @Test
-    void deletingAlreadyHiddenCommentDoesNotSubtractFromAncestorsTwice()
+    void deletingAlreadyHiddenCommentRecalculatesInsteadOfApplyingDeltas()
     {
         final UUID authorId = UUID.randomUUID();
 
@@ -145,6 +147,8 @@ class CommentBanVisibilityServiceTest
         assertThat(hidden.isDeleted()).isTrue();
         verify(commentRepository, never()).addToReplyCount(any(), anyInt());
         verify(commentRepository, never()).addToTotalReplyCount(any(), anyInt());
+        verify(commentRepository).recalculateReplyCounts();
+        verify(commentRepository).recalculateTotalReplyCounts();
     }
 
     /**

@@ -1,6 +1,7 @@
 package club.ttg.comment.service;
 
 import club.ttg.comment.config.RateLimitConfig;
+import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
@@ -12,6 +13,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
@@ -204,9 +207,9 @@ class CommentBanVisibilityIntegrationTest
     }
 
     /**
-     * Точечное восстановление модератором: удаление ветки и её возврат должны привести счётчики
-     * ровно к исходным значениям. Восстанавливается только сам узел — ответы под ним остались
-     * PUBLISHED и снова попадают в счёт вместе с ним.
+     * Точечное восстановление модератором: удаление узла и его возврат должны привести счётчики
+     * ровно к исходным значениям. Пока узел удалён, его опубликованное поддерево остаётся
+     * в счётчиках предков — оно видимо под надгробием, из счёта уходит только сам узел.
      * <p>
      * Дерево: root → replyA → replyB, удаляется и возвращается replyA.
      */
@@ -227,9 +230,12 @@ class CommentBanVisibilityIntegrationTest
         commentService.deleteComment(replyA.getId(), otherAuthorId, true);
         entityManager.clear();
 
-        // Вся ветка уходит из счётчиков корня.
+        // Из счётчиков корня уходит только сам replyA; replyB остаётся под надгробием.
         assertThat(reload(root).getReplyCount()).isZero();
-        assertThat(reload(root).getTotalReplyCount()).isZero();
+        assertThat(reload(root).getTotalReplyCount()).isEqualTo(1);
+        // Собственные счётчики надгробия живут дальше — по totalReplyCount > 0 оно видимо.
+        assertThat(reload(replyA).getReplyCount()).isEqualTo(1);
+        assertThat(reload(replyA).getTotalReplyCount()).isEqualTo(1);
 
         commentService.restoreComment(replyA.getId(), true);
         entityManager.clear();
@@ -244,13 +250,13 @@ class CommentBanVisibilityIntegrationTest
     }
 
     /**
-     * Ради чего пересчёт предпочтён симметричной дельте: пока узел удалён, ответы под ним могут
-     * удалять, и сохранённый в удалённой строке totalReplyCount устаревает (обход предков
-     * останавливается на первом удалённом и до неё не доходит). Сложение вернуло бы корню
-     * поддерево вместе с уже удалённым ответом; пересчёт с нуля даёт согласованные счётчики.
+     * Удаление ответа под надгробием: дельта проходит сквозь удалённого родителя и хоронит
+     * надгробие (totalReplyCount падает до нуля — показывать больше нечего). Восстановление
+     * родителя после этого возвращает только его самого: удалённый replyB не воскресает
+     * и в счётчики не попадает.
      */
     @Test
-    void restoreDoesNotReturnRepliesDeletedWhileNodeWasDeleted()
+    void deletingLastReplyUnderTombstoneBuriesItAndRestoreBringsOnlyTheNode()
     {
         final Comment root = save(comment(otherAuthorId, null, CommentStatus.PUBLISHED, "корень"));
         final Comment replyA = save(comment(otherAuthorId, root.getId(), CommentStatus.PUBLISHED, "ответ A"));
@@ -263,10 +269,13 @@ class CommentBanVisibilityIntegrationTest
         commentService.deleteComment(replyA.getId(), otherAuthorId, true);
         entityManager.clear();
 
-        // replyB удаляют, пока его родитель уже удалён: счётчик в строке replyA остаётся прежним.
+        // replyB удаляют, пока его родитель — надгробие: минус один доходит и до строки
+        // родителя (надгробие хоронится), и до корня.
         commentService.deleteComment(replyB.getId(), otherAuthorId, true);
         entityManager.clear();
-        assertThat(reload(replyA).getTotalReplyCount()).isEqualTo(1);
+        assertThat(reload(replyA).getReplyCount()).isZero();
+        assertThat(reload(replyA).getTotalReplyCount()).isZero();
+        assertThat(reload(root).getTotalReplyCount()).isZero();
 
         commentService.restoreComment(replyA.getId(), true);
         entityManager.clear();
@@ -277,6 +286,53 @@ class CommentBanVisibilityIntegrationTest
         assertThat(reload(replyA).getReplyCount()).isZero();
         assertThat(reload(replyA).getTotalReplyCount()).isZero();
         assertThat(statusOf(replyB)).isEqualTo(CommentStatus.DELETED);
+    }
+
+    /**
+     * Сквозной сценарий надгробия: удалённый корень с живым ответом остаётся в публичной
+     * выдаче замаскированным узлом, его ответы продолжают отдаваться; после удаления
+     * последнего ответа надгробие уходит из выдачи само.
+     */
+    @Test
+    void deletedCommentWithRepliesStaysVisibleAsTombstoneUntilBranchDies()
+    {
+        final Comment root = save(comment(otherAuthorId, null, CommentStatus.PUBLISHED, "корень"));
+        final Comment reply = save(comment(bannedAuthorId, root.getId(), CommentStatus.PUBLISHED, "полезный ответ"));
+
+        commentRepository.recalculateReplyCounts();
+        commentRepository.recalculateTotalReplyCounts();
+        entityManager.clear();
+
+        commentService.deleteComment(root.getId(), otherAuthorId, false);
+        entityManager.clear();
+
+        final Page<CommentResponse> roots =
+                commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20));
+
+        // Корень остался в выдаче надгробием: статус виден, содержимое — нет.
+        assertThat(roots.getContent()).singleElement().satisfies(tombstone -> {
+            assertThat(tombstone.getId()).isEqualTo(root.getId());
+            assertThat(tombstone.getStatus()).isEqualTo(CommentStatus.DELETED);
+            assertThat(tombstone.getContent()).isNull();
+            assertThat(tombstone.getAuthorId()).isNull();
+            assertThat(tombstone.getAuthorName()).isNull();
+        });
+
+        // Ветка под надгробием живёт: ответ отдаётся как обычно.
+        assertThat(commentService.getReplies(root.getId()))
+                .singleElement()
+                .extracting(CommentResponse::getContent)
+                .isEqualTo("полезный ответ");
+
+        // По прямой ссылке надгробие тоже доступно — подъём по parentId не обрывается.
+        assertThat(commentService.getComment(root.getId()).getContent()).isNull();
+
+        commentService.deleteComment(reply.getId(), bannedAuthorId, false);
+        entityManager.clear();
+
+        // Последний ответ удалён — показывать больше нечего, надгробие ушло из выдачи.
+        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20))
+                .getContent()).isEmpty();
     }
 
     private Comment save(final Comment comment)

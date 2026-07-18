@@ -34,22 +34,39 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     @Query(value = "UPDATE comment.comments SET dislike_count = dislike_count + 1 WHERE id = :id",
             nativeQuery = true)
     void incrementDislikeCount(@Param("id") UUID id);
-    Page<Comment> findBySectionAndUrlAndParentIdIsNullAndStatusOrderByCreatedAtDesc(
-            String section,
-            String url,
-            CommentStatus status,
+
+    /**
+     * Корневые комментарии страницы для публичной выдачи: опубликованные плюс «надгробия» —
+     * удалённые узлы, под которыми остались опубликованные потомки ({@code totalReplyCount > 0}).
+     * Надгробие держит ветку ответов видимой; удалённый комментарий без живых потомков
+     * в выдачу не попадает. Текст и автора надгробия маскирует сервис — запрос отдаёт строку
+     * целиком.
+     */
+    @Query("SELECT c FROM Comment c "
+            + "WHERE c.section = :section AND c.url = :url AND c.parentId IS NULL "
+            + "AND (c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "OR (c.status = club.ttg.comment.model.CommentStatus.DELETED AND c.totalReplyCount > 0)) "
+            + "ORDER BY c.createdAt DESC")
+    Page<Comment> findVisibleRootComments(
+            @Param("section") String section,
+            @Param("url") String url,
             Pageable pageable
     );
+
+    /**
+     * Ответы на комментарий для публичной выдачи — то же правило видимости, что и у
+     * {@link #findVisibleRootComments}: PUBLISHED либо надгробие с живыми потомками.
+     */
+    @Query("SELECT c FROM Comment c WHERE c.parentId = :parentId "
+            + "AND (c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "OR (c.status = club.ttg.comment.model.CommentStatus.DELETED AND c.totalReplyCount > 0)) "
+            + "ORDER BY c.createdAt ASC")
+    List<Comment> findVisibleByParentId(@Param("parentId") UUID parentId);
 
     // Вторичная сортировка по id даёт детерминированного «последнего» при равном created_at.
     Optional<Comment> findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
             String section,
             String url,
-            CommentStatus status
-    );
-
-    List<Comment> findByParentIdAndStatusOrderByCreatedAtAsc(
-            UUID parentId,
             CommentStatus status
     );
 
@@ -110,12 +127,13 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
 
     /**
      * Пересчитывает {@code reply_count} (число прямых опубликованных ответов) у всех
-     * опубликованных комментариев.
+     * опубликованных и удалённых комментариев. Удалённые включены не случайно: надгробию
+     * счётчики нужны для собственной видимости и для «N ответов» в выдаче.
      * <p>
      * Массовое скрытие нельзя свести к дельтам, как это делается при удалении одного
      * комментария: комментарии забаненного автора могут быть вложены друг в друга, и вычитание
      * задвоилось бы. Пересчёт с нуля идемпотентен и одинаково корректен в обе стороны.
-     * Неопубликованные строки не трогаются — в выдаче они не участвуют, а их счётчики
+     * Строки в остальных статусах не трогаются — в выдаче они не участвуют, а их счётчики
      * восстановятся при возврате в PUBLISHED.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
@@ -127,7 +145,7 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
                 FROM comment.comments p
                 LEFT JOIN comment.comments child
                        ON child.parent_id = p.id AND child.status = 'PUBLISHED'
-                WHERE p.status = 'PUBLISHED'
+                WHERE p.status IN ('PUBLISHED', 'DELETED')
                 GROUP BY p.id
             ) child_counts
             WHERE t.id = child_counts.parent_id
@@ -136,28 +154,33 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     void recalculateReplyCounts();
 
     /**
-     * Пересчитывает {@code total_reply_count} (всё поддерево) у всех опубликованных комментариев.
-     * Повторяет логику changeSet {@code backfill-total-reply-count} миграции
-     * {@code 003-total-reply-count.yaml}: рекурсия идёт только через PUBLISHED-узлы, поэтому
-     * любой другой статус обрывает путь и ветви под скрытым узлом в счёт не входят — ровно так же,
-     * как {@code adjustAncestorTotals} останавливается на первом удалённом предке.
+     * Пересчитывает {@code total_reply_count} — число опубликованных потомков, достижимых
+     * по цепочке из PUBLISHED- и DELETED-узлов, — у всех опубликованных и удалённых комментариев.
+     * <p>
+     * DELETED проницаем для рекурсии: удалённый узел остаётся в выдаче надгробием, и ветка
+     * под ним живёт, поэтому её нельзя выкидывать из счётчиков предков. Сами DELETED-узлы
+     * при этом не считаются (надгробие — не комментарий), но счётчик им ведётся: по
+     * {@code total_reply_count > 0} выборки решают, показывать ли надгробие. Любой другой
+     * статус (HIDDEN_BY_BAN, REJECTED, SPAM, PENDING_MODERATION) обрывает путь — ровно так же,
+     * как {@code adjustAncestorTotals} останавливается на первом таком предке.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             WITH RECURSIVE subtree AS (
-                SELECT c.id AS root_id, c.id AS node_id
+                SELECT c.id AS root_id, c.id AS node_id, c.status AS node_status
                 FROM comment.comments c
-                WHERE c.status = 'PUBLISHED'
+                WHERE c.status IN ('PUBLISHED', 'DELETED')
                 UNION ALL
-                SELECT s.root_id, child.id
+                SELECT s.root_id, child.id, child.status
                 FROM subtree s
                 JOIN comment.comments child ON child.parent_id = s.node_id
-                WHERE child.status = 'PUBLISHED'
+                WHERE child.status IN ('PUBLISHED', 'DELETED')
             )
             UPDATE comment.comments t
             SET total_reply_count = sub.cnt
             FROM (
-                SELECT root_id, COUNT(*) - 1 AS cnt
+                SELECT root_id,
+                       COUNT(*) FILTER (WHERE node_status = 'PUBLISHED' AND node_id <> root_id) AS cnt
                 FROM subtree
                 GROUP BY root_id
             ) sub

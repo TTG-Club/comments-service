@@ -10,7 +10,9 @@ import java.util.UUID;
 
 @Getter
 @Setter
-@Schema(description = "Комментарий")
+@Schema(description = "Комментарий. В публичных выдачах удалённый комментарий с живыми ответами "
+        + "приходит надгробием: status = DELETED, content/authorId/authorName/editedAt/dislikeCount "
+        + "= null, остальные поля (id, parentId, счётчики, createdAt) заполнены.")
 public class CommentResponse
 {
     @Schema(description = "Идентификатор комментария")
@@ -36,7 +38,8 @@ public class CommentResponse
     @Schema(description = "Имя автора на момент создания", example = "john")
     private String authorName;
 
-    @Schema(description = "Текст комментария")
+    @Schema(description = "Текст комментария; null у надгробия (удалённого комментария, "
+            + "оставленного в выдаче ради ветки ответов)")
     private String content;
 
     @Schema(description = "Статус комментария", example = "PUBLISHED")

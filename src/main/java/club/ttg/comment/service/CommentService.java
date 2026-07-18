@@ -33,6 +33,12 @@ public class CommentService
     private final CommentMapper commentMapper;
     private final CommentRateLimitService commentRateLimitService;
 
+    /**
+     * Корневые комментарии страницы. Кроме опубликованных, отдаются надгробия: удалённые
+     * комментарии, под которыми остались опубликованные ответы. Такой узел приходит со статусом
+     * DELETED и без текста и автора — {@link #buildPublicResponse} маскирует всё, кроме каркаса
+     * (id, счётчики, дата), чтобы фронт мог отрисовать «комментарий удалён» и ветку под ним.
+     */
     @Transactional(readOnly = true)
     public Page<CommentResponse> getRootComments(
             final String section,
@@ -40,12 +46,11 @@ public class CommentService
             final Pageable pageable
     )
     {
-        return commentRepository.findBySectionAndUrlAndParentIdIsNullAndStatusOrderByCreatedAtDesc(
+        return commentRepository.findVisibleRootComments(
                 normalize(section),
                 normalize(url),
-                CommentStatus.PUBLISHED,
                 pageable
-        ).map(this::buildResponse);
+        ).map(this::buildPublicResponse);
     }
 
     /**
@@ -123,30 +128,33 @@ public class CommentService
         return response;
     }
 
+    /**
+     * Ответы на комментарий. Видимость та же, что и у корней: опубликованные плюс надгробия
+     * с живыми потомками, замаскированные {@link #buildPublicResponse}.
+     */
     @Transactional(readOnly = true)
     public List<CommentResponse> getReplies(final UUID parentId)
     {
-        return commentRepository.findByParentIdAndStatusOrderByCreatedAtAsc(
-                        parentId,
-                        CommentStatus.PUBLISHED
-                )
+        return commentRepository.findVisibleByParentId(parentId)
                 .stream()
-                .map(this::buildResponse)
+                .map(this::buildPublicResponse)
                 .toList();
     }
 
     /**
-     * Один опубликованный комментарий по id (для перехода по прямой ссылке). Удалённый или
-     * несуществующий — 404. Фронт по {@code parentId} поднимается по цепочке к корню.
+     * Один комментарий по id (для перехода по прямой ссылке). Опубликованный отдаётся целиком,
+     * видимое надгробие — в замаскированном виде: фронт по {@code parentId} поднимается по
+     * цепочке к корню, и удалённое звено с живой веткой не должно обрывать подъём. Удалённый
+     * без живых потомков или несуществующий — 404.
      */
     @Transactional(readOnly = true)
     public CommentResponse getComment(final UUID commentId)
     {
         final Comment comment = commentRepository.findById(commentId)
-                .filter(candidate -> candidate.getStatus() == CommentStatus.PUBLISHED)
+                .filter(this::isPubliclyVisible)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
 
-        return buildResponse(comment);
+        return buildPublicResponse(comment);
     }
 
     @Transactional(readOnly = true)
@@ -202,6 +210,54 @@ public class CommentService
         final CommentResponse response = commentMapper.toResponse(comment);
         response.setParentAuthorName(resolveParentAuthorName(comment.getParentId()));
         return response;
+    }
+
+    /**
+     * Версия {@link #buildResponse} для публичных выдач: удалённый комментарий отдаётся
+     * надгробием — без текста, автора и прочих следов содержимого. Модераторские выдачи
+     * этим билдером не пользуются: им удалённый текст нужен целиком.
+     */
+    private CommentResponse buildPublicResponse(final Comment comment)
+    {
+        if (comment.isDeleted())
+        {
+            return buildTombstoneResponse(comment);
+        }
+
+        return buildResponse(comment);
+    }
+
+    /**
+     * Надгробие: от комментария остаётся каркас — id, положение в дереве, счётчики и дата
+     * создания (по ней фронт сортирует ветку). Текст, автор, снапшот имени, дизлайки и отметка
+     * о правке скрываются: удалённое не должно утекать в публичный API даже частями.
+     * {@code parentAuthorName} не заполняется и ради этого же, и чтобы не делать лишний запрос.
+     */
+    private CommentResponse buildTombstoneResponse(final Comment comment)
+    {
+        final CommentResponse response = commentMapper.toResponse(comment);
+        response.setContent(null);
+        response.setAuthorId(null);
+        response.setAuthorName(null);
+        response.setEditedAt(null);
+        response.setDislikeCount(null);
+        response.setParentAuthorName(null);
+        return response;
+    }
+
+    /**
+     * Что видно в публичных выдачах: опубликованный комментарий либо надгробие — удалённый,
+     * под которым остались опубликованные потомки. Условие то же, что в запросах
+     * {@code findVisibleRootComments}/{@code findVisibleByParentId}.
+     */
+    private boolean isPubliclyVisible(final Comment comment)
+    {
+        if (comment.getStatus() == CommentStatus.PUBLISHED)
+        {
+            return true;
+        }
+
+        return comment.isDeleted() && safeTotalReplyCount(comment) > 0;
     }
 
     private String resolveParentAuthorName(final UUID parentId)
@@ -314,13 +370,19 @@ public class CommentService
     }
 
     /**
-     * Мягко удаляет комментарий (статус DELETED, ветка ответов скрывается из выдачи). Автор
-     * удаляет только свой; модератор и администратор ({@code canModerate == true}) — любой.
+     * Мягко удаляет комментарий (статус DELETED). Автор удаляет только свой; модератор
+     * и администратор ({@code canModerate == true}) — любой.
      * <p>
-     * Удаление мягкое во всём: строка и её текст остаются в базе, публично не отдаются нигде,
-     * но видны модератору в {@code /moderation}. Отменить удаление может только модератор или
-     * администратор — через {@link #restoreComment}; ни автор, ни разблокировка автора статус
-     * DELETED не снимают.
+     * Ветка ответов при этом не пропадает: если под комментарием остались опубликованные
+     * ответы, он продолжает отдаваться в публичных выдачах надгробием — без текста и автора,
+     * но с местом в дереве, чтобы ответы (они могут быть полезны сами по себе) было к чему
+     * прикрепить. Удалённый без живых потомков из выдачи уходит совсем; уйдёт и надгробие,
+     * когда удалят последний ответ под ним.
+     * <p>
+     * Удаление мягкое во всём: строка и её текст остаются в базе, публично текст не отдаётся
+     * нигде, но виден модератору в {@code /moderation}. Отменить удаление может только модератор
+     * или администратор — через {@link #restoreComment}; ни автор, ни разблокировка автора
+     * статус DELETED не снимают.
      */
     @Transactional
     public void deleteComment(
@@ -339,29 +401,30 @@ public class CommentService
             return;
         }
 
-        // Вычитать из счётчиков предков нужно только то, что в них входило. В счётчики входят
-        // лишь PUBLISHED-узлы, поэтому удаление уже скрытого баном комментария (его видно
-        // модератору в общем списке) не должно вычитать его повторно — пересчёт при скрытии
-        // уже убрал его вместе с поддеревом, и вычитание задвоилось бы.
-        final boolean wasCountedInAncestors = comment.getStatus() == CommentStatus.PUBLISHED;
-
-        // Из счётчиков предков уходит сам комментарий и всё его достижимое поддерево.
-        final int removedFromTotals = 1 + safeTotalReplyCount(comment);
+        final boolean wasPublished = comment.getStatus() == CommentStatus.PUBLISHED;
 
         comment.markAsDeleted();
         commentRepository.save(comment);
 
-        if (!wasCountedInAncestors)
+        if (!wasPublished)
         {
+            // Статус-барьер (HIDDEN_BY_BAN, REJECTED, SPAM) становится проницаемым DELETED:
+            // опубликованные ответы, исключённые из счётчиков вместе с поддеревом барьера,
+            // возвращаются в них через надгробие. Дельтой такую смену формы дерева не выразить —
+            // только пересчётом с нуля (он же проставит надгробию его собственные счётчики).
+            recalculateReplyCounters();
             return;
         }
 
+        // Из счётчиков предков уходит только сам комментарий: его опубликованное поддерево
+        // остаётся видимым под надгробием и продолжает считаться. Прежде вычитание шло вместе
+        // с поддеревом (1 + totalReplyCount) — тогда удаление прятало ветку целиком.
         if (comment.getParentId() != null)
         {
             commentRepository.addToReplyCount(comment.getParentId(), -1);
         }
 
-        adjustAncestorTotals(comment.getParentId(), -removedFromTotals);
+        adjustAncestorTotals(comment.getParentId(), -1);
     }
 
     /**
@@ -377,20 +440,18 @@ public class CommentService
      * иначе следующая же синхронизация вернула бы комментарий обратно в скрытые. REJECTED и SPAM
      * — решения модерации, которые не следует отменять ручкой «восстановить удалённое».
      * <p>
-     * Счётчики восстанавливаются полным пересчётом, как при разбане, а не дельтой: сохранённый
-     * в удалённой строке {@code totalReplyCount} успел устареть (пока узел был удалён, ответы
-     * под ним могли удалять — обход предков останавливается на первом удалённом, и до этой
-     * строки не доходил), поэтому симметричное сложение задвоило бы или недосчитало. Пересчёт
-     * с нуля идемпотентен и заодно чинит уже накопленное расхождение. Он дороже дельты, но
-     * восстановление — редкая ручная операция модератора.
+     * Счётчики восстанавливаются полным пересчётом, как при разбане, а не дельтой: восстановление
+     * меняет вклад узла в счётчики предков с «только опубликованные потомки» (как у надгробия)
+     * на «сам узел плюс потомки», и корректная дельта зависела бы от формы дерева и статусов
+     * вокруг. Пересчёт с нуля идемпотентен и заодно чинит любое накопленное расхождение.
+     * Он дороже дельты, но восстановление — редкая ручная операция модератора.
      * <p>
      * Два следствия, о которых стоит знать вызывающему. Во-первых, если родитель комментария
-     * удалён, восстановленный ответ останется невидимым на странице: обход дерева идёт от корня
-     * и обрывается на удалённом узле. Вернуть ветку целиком можно, восстановив её верхний
-     * удалённый узел. Во-вторых, комментарий, удалённый до бана автора, скрытие при бане не
-     * затронуло (оно берёт только PUBLISHED), поэтому его восстановление сделает комментарий
-     * заблокированного автора видимым — состояния банов сервис у себя не хранит и проверить
-     * его не может.
+     * удалён и не имел других опубликованных потомков, восстановление сделает родителя видимым
+     * надгробием: у него снова есть живой потомок. Во-вторых, комментарий, удалённый до бана
+     * автора, скрытие при бане не затронуло (оно берёт только PUBLISHED), поэтому его
+     * восстановление сделает комментарий заблокированного автора видимым — состояния банов
+     * сервис у себя не хранит и проверить его не может.
      */
     @Transactional
     public CommentResponse restoreComment(
@@ -488,10 +549,12 @@ public class CommentService
 
     /**
      * Меняет {@code totalReplyCount} у всех предков, начиная с {@code startParentId} и выше,
-     * на {@code delta}. Обход прекращается на первом удалённом предке: поддерево под ним уже
-     * исключено из счётчиков вышестоящих узлов (при его удалении), поэтому идти выше нельзя —
-     * иначе изменение задвоится. Это же покрывает ответы на осиротевший (но опубликованный)
-     * комментарий под удалённым родителем.
+     * на {@code delta}. Удалённые предки обходу не мешают: надгробие держит свою ветку видимой,
+     * поэтому его счётчик и счётчики узлов над ним должны отражать происходящее ниже — в том
+     * числе чтобы надгробие исчезло из выдачи, когда под ним не останется опубликованного
+     * ({@code totalReplyCount} упадёт до 0). Обход прекращается на предке в любом другом
+     * не-PUBLISHED статусе (HIDDEN_BY_BAN, REJECTED, SPAM): такое поддерево целиком исключено
+     * из счётчиков вышестоящих узлов, и изменение под ним их не касается.
      */
     private void adjustAncestorTotals(
             final UUID startParentId,
@@ -503,7 +566,7 @@ public class CommentService
         while (currentId != null)
         {
             final Comment ancestor = commentRepository.findById(currentId).orElse(null);
-            if (ancestor == null || ancestor.isDeleted())
+            if (ancestor == null || blocksCountPropagation(ancestor))
             {
                 return;
             }
@@ -512,6 +575,15 @@ public class CommentService
 
             currentId = ancestor.getParentId();
         }
+    }
+
+    /**
+     * true для статусов-барьеров, чьё поддерево не входит в счётчики предков. PUBLISHED
+     * и DELETED (надгробие) для счётчиков проницаемы, остальные статусы — нет.
+     */
+    private boolean blocksCountPropagation(final Comment comment)
+    {
+        return comment.getStatus() != CommentStatus.PUBLISHED && !comment.isDeleted();
     }
 
     private int safeTotalReplyCount(final Comment comment)

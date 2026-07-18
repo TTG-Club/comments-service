@@ -78,7 +78,7 @@ class CommentServiceTest
     }
 
     @Test
-    void createReplyToOrphanStopsAtDeletedAncestor()
+    void createReplyUnderTombstonePropagatesTotalsThroughItToRoot()
     {
         final Comment root = published(UUID.randomUUID(), null);
 
@@ -93,12 +93,14 @@ class CommentServiceTest
 
         verify(commentRepository).addToReplyCount(orphan.getId(), 1);
         verify(commentRepository).addToTotalReplyCount(orphan.getId(), 1);
-        // Обход остановился на удалённом узле — корень не тронут.
-        verify(commentRepository, never()).addToTotalReplyCount(eq(root.getId()), anyInt());
+        // Удалённый узел для счётчиков проницаем: новый потомок входит и в его счётчик
+        // (держит надгробие видимым), и в счётчик корня над ним.
+        verify(commentRepository).addToTotalReplyCount(deletedMiddle.getId(), 1);
+        verify(commentRepository).addToTotalReplyCount(root.getId(), 1);
     }
 
     @Test
-    void deleteCommentDecrementsAncestorsBySubtreePlusSelf()
+    void deleteCommentDecrementsAncestorsByNodeOnlyKeepingSubtreeCounted()
     {
         final UUID authorId = UUID.randomUUID();
 
@@ -114,14 +116,15 @@ class CommentServiceTest
 
         assertThat(parent.isDeleted()).isTrue();
         verify(commentRepository).addToReplyCount(grandparent.getId(), -1);
-        // Из числа потомков деда уходит сам parent и его поддерево из 3 → -4.
-        verify(commentRepository).addToTotalReplyCount(grandparent.getId(), -4);
+        // Поддерево из 3 ответов остаётся видимым под надгробием и продолжает считаться —
+        // из числа потомков деда уходит только сам parent.
+        verify(commentRepository).addToTotalReplyCount(grandparent.getId(), -1);
     }
 
     /**
      * Сервис ничего не удаляет безвозвратно: мягкое удаление меняет статус и проставляет
-     * deletedAt, но текст остаётся в базе. Публично он не отдаётся (все выдачи фильтруют
-     * PUBLISHED), зато остаётся доступен модератору в /moderation.
+     * deletedAt, но текст остаётся в базе. Публично он не отдаётся (надгробие приходит
+     * без текста), зато остаётся доступен модератору в /moderation.
      */
     @Test
     void deleteKeepsCommentContentInDatabase()
@@ -157,7 +160,7 @@ class CommentServiceTest
     }
 
     @Test
-    void deleteOrphanStopsAtDeletedAncestorAndLeavesRootUntouched()
+    void deleteOrphanPropagatesMinusOneThroughTombstoneToRoot()
     {
         final UUID authorId = UUID.randomUUID();
 
@@ -176,8 +179,83 @@ class CommentServiceTest
 
         assertThat(orphan.isDeleted()).isTrue();
         verify(commentRepository).addToReplyCount(deletedMiddle.getId(), -1);
-        // Обход totalReplyCount остановился на удалённом родителе — корень не тронут.
-        verify(commentRepository, never()).addToTotalReplyCount(eq(root.getId()), anyInt());
+        // Минус один — сквозь надгробие до корня: так счётчик надгробия падает до нуля,
+        // когда под ним не остаётся опубликованного, и оно уходит из выдачи.
+        verify(commentRepository).addToTotalReplyCount(deletedMiddle.getId(), -1);
+        verify(commentRepository).addToTotalReplyCount(root.getId(), -1);
+    }
+
+    /**
+     * Надгробие в публичной выдаче — каркас без содержимого: удалённые текст, автор, отметка
+     * о правке и дизлайки не должны утекать даже частями. Каркас (id, место в дереве, счётчики,
+     * дата) остаётся — по нему фронт рисует «комментарий удалён» и ветку ответов под ним.
+     */
+    @Test
+    void getRepliesMasksTombstoneButKeepsSkeleton()
+    {
+        final Comment parent = published(UUID.randomUUID(), null);
+
+        final Comment tombstone = published(UUID.randomUUID(), parent.getId());
+        tombstone.setContent("удалённый текст");
+        tombstone.setAuthorNameSnapshot("удалённый автор");
+        tombstone.setDislikeCount(5);
+        tombstone.markAsEdited();
+        tombstone.setReplyCount(2);
+        tombstone.setTotalReplyCount(3);
+        tombstone.markAsDeleted();
+
+        when(commentRepository.findVisibleByParentId(parent.getId())).thenReturn(List.of(tombstone));
+
+        final CommentResponse masked = commentService.getReplies(parent.getId()).get(0);
+
+        assertThat(masked.getStatus()).isEqualTo(CommentStatus.DELETED);
+        assertThat(masked.getContent()).isNull();
+        assertThat(masked.getAuthorId()).isNull();
+        assertThat(masked.getAuthorName()).isNull();
+        assertThat(masked.getEditedAt()).isNull();
+        assertThat(masked.getDislikeCount()).isNull();
+        assertThat(masked.getParentAuthorName()).isNull();
+
+        assertThat(masked.getId()).isEqualTo(tombstone.getId());
+        assertThat(masked.getParentId()).isEqualTo(parent.getId());
+        assertThat(masked.getReplyCount()).isEqualTo(2);
+        assertThat(masked.getTotalReplyCount()).isEqualTo(3);
+        assertThat(masked.getCreatedAt()).isEqualTo(tombstone.getCreatedAt());
+    }
+
+    @Test
+    void getRootCommentsMaskTombstonesAndLeavePublishedIntact()
+    {
+        final Comment live = published(UUID.randomUUID(), null);
+        live.setContent("живой текст");
+
+        final Comment tombstone = published(UUID.randomUUID(), null);
+        tombstone.setContent("удалённый текст");
+        tombstone.setTotalReplyCount(1);
+        tombstone.markAsDeleted();
+
+        when(commentRepository.findVisibleRootComments(eq("blog"), eq("/posts/x"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(live, tombstone)));
+
+        final Page<CommentResponse> page = commentService.getRootComments("Blog", " /posts/X ", PageRequest.of(0, 20));
+
+        assertThat(responseFor(page, live.getId()).getContent()).isEqualTo("живой текст");
+        assertThat(responseFor(page, tombstone.getId()).getContent()).isNull();
+        assertThat(responseFor(page, tombstone.getId()).getStatus()).isEqualTo(CommentStatus.DELETED);
+    }
+
+    /** Надгробие видно в выдаче, но живым узлом не является: отвечать на него нельзя. */
+    @Test
+    void replyToTombstoneIsRejected()
+    {
+        final Comment tombstone = published(UUID.randomUUID(), null);
+        tombstone.setTotalReplyCount(1);
+        tombstone.markAsDeleted();
+        stubFindById(tombstone);
+
+        assertThatThrownBy(() -> commentService.createReply(
+                tombstone.getId(), request("ответ надгробию"), UUID.randomUUID(), "user", false))
+                .isInstanceOf(CommentStateException.class);
     }
 
     @Test
@@ -375,8 +453,9 @@ class CommentServiceTest
         assertThat(result.getParentAuthorName()).isNull();
     }
 
+    /** Удалённый без опубликованных потомков — не надгробие, а обычный 404. */
     @Test
-    void getCommentThrowsForDeleted()
+    void getCommentThrowsForDeletedWithoutLiveReplies()
     {
         final Comment deleted = published(UUID.randomUUID(), null);
         deleted.markAsDeleted();
@@ -384,6 +463,30 @@ class CommentServiceTest
 
         assertThatThrownBy(() -> commentService.getComment(deleted.getId()))
                 .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    /**
+     * Удалённый с живой веткой отдаётся по прямой ссылке надгробием: фронт поднимается по
+     * parentId к корню, и удалённое звено не должно обрывать цепочку. Текст и автор при этом
+     * не утекают.
+     */
+    @Test
+    void getCommentReturnsMaskedTombstoneWhenBranchIsAlive()
+    {
+        final Comment tombstone = published(UUID.randomUUID(), null);
+        tombstone.setContent("удалённый текст");
+        tombstone.setAuthorNameSnapshot("удалённый автор");
+        tombstone.setTotalReplyCount(2);
+        tombstone.markAsDeleted();
+        stubFindById(tombstone);
+
+        final CommentResponse response = commentService.getComment(tombstone.getId());
+
+        assertThat(response.getId()).isEqualTo(tombstone.getId());
+        assertThat(response.getStatus()).isEqualTo(CommentStatus.DELETED);
+        assertThat(response.getContent()).isNull();
+        assertThat(response.getAuthorId()).isNull();
+        assertThat(response.getAuthorName()).isNull();
     }
 
     @Test

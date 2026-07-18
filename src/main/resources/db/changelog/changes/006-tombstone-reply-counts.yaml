@@ -1,0 +1,66 @@
+databaseChangeLog:
+  - changeSet:
+      id: recalculate-reply-count-for-tombstones
+      author: ttg
+      comment: >-
+        Удалённый комментарий с опубликованными ответами теперь остаётся в выдаче
+        надгробием, поэтому DELETED-строкам нужны актуальные счётчики: по
+        total_reply_count > 0 выборки решают, показывать ли надгробие. Здесь
+        reply_count (прямые опубликованные ответы) пересчитывается для PUBLISHED-
+        и DELETED-строк — до сих пор счётчики удалённых замораживались на момент
+        удаления. Запрос повторяет recalculateReplyCounts из CommentRepository.
+      changes:
+        - sql:
+            dbms: postgresql
+            splitStatements: false
+            sql: >-
+              UPDATE comment.comments t
+              SET reply_count = child_counts.cnt
+              FROM (
+                  SELECT p.id AS parent_id, COUNT(child.id) AS cnt
+                  FROM comment.comments p
+                  LEFT JOIN comment.comments child
+                         ON child.parent_id = p.id AND child.status = 'PUBLISHED'
+                  WHERE p.status IN ('PUBLISHED', 'DELETED')
+                  GROUP BY p.id
+              ) child_counts
+              WHERE t.id = child_counts.parent_id
+                AND t.reply_count <> child_counts.cnt;
+
+  - changeSet:
+      id: recalculate-total-reply-count-for-tombstones
+      author: ttg
+      comment: >-
+        total_reply_count по новой семантике: число опубликованных потомков,
+        достижимых по цепочке из PUBLISHED- и DELETED-узлов. DELETED больше не
+        обрывает рекурсию (ветка под надгробием живёт и должна оставаться в
+        счётчиках предков), сами DELETED-узлы не считаются, но собственный счётчик
+        получают — он определяет видимость надгробия. Остальные статусы по-прежнему
+        обрывают путь. Побочный эффект пересчёта: ранее удалённые комментарии с
+        живыми ответами становятся надгробиями, и их ветки возвращаются в выдачу.
+        Запрос повторяет recalculateTotalReplyCounts из CommentRepository.
+      changes:
+        - sql:
+            dbms: postgresql
+            splitStatements: false
+            sql: >-
+              WITH RECURSIVE subtree AS (
+                  SELECT c.id AS root_id, c.id AS node_id, c.status AS node_status
+                  FROM comment.comments c
+                  WHERE c.status IN ('PUBLISHED', 'DELETED')
+                  UNION ALL
+                  SELECT s.root_id, child.id, child.status
+                  FROM subtree s
+                  JOIN comment.comments child ON child.parent_id = s.node_id
+                  WHERE child.status IN ('PUBLISHED', 'DELETED')
+              )
+              UPDATE comment.comments t
+              SET total_reply_count = sub.cnt
+              FROM (
+                  SELECT root_id,
+                         COUNT(*) FILTER (WHERE node_status = 'PUBLISHED' AND node_id <> root_id) AS cnt
+                  FROM subtree
+                  GROUP BY root_id
+              ) sub
+              WHERE t.id = sub.root_id
+                AND t.total_reply_count <> sub.cnt;
