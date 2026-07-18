@@ -1,6 +1,7 @@
 package club.ttg.comment.config;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -24,6 +25,7 @@ import java.util.List;
 
 @Configuration
 @EnableWebSecurity
+@EnableConfigurationProperties(InternalServiceProperties.class)
 public class SecurityConfig
 {
     private static final String[] SWAGGER_WHITELIST = {
@@ -53,6 +55,15 @@ public class SecurityConfig
     private static final String PUBLIC_COMMENT_BY_ID_PATTERN =
             "/api/v1/comments/{id:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}}";
 
+    /**
+     * Межсервисные ручки: их вызывает auth-service, пользовательского JWT у него нет.
+     * {@code permitAll} здесь не означает «открыто всем» — доступ проверяет
+     * {@link club.ttg.comment.security.InternalServiceTokenFilter} по общему секрету.
+     * Без этого исключения запрос без Bearer-токена отвергался бы цепочкой Spring Security
+     * раньше, чем фильтр (обычный сервлет-фильтр, идущий после неё) получил бы управление.
+     */
+    private static final String INTERNAL_PATH_PATTERN = "/api/v1/internal/**";
+
     private static final int MIN_SECRET_LENGTH_BYTES = 32;
 
     @Bean
@@ -62,6 +73,7 @@ public class SecurityConfig
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(SWAGGER_WHITELIST).permitAll()
+                        .requestMatchers(INTERNAL_PATH_PATTERN).permitAll()
                         .requestMatchers(HttpMethod.GET, MODERATION_PATH, MODERATION_PATH_PATTERN)
                         .hasAnyRole("MODERATOR", "ADMIN")
                         .requestMatchers(

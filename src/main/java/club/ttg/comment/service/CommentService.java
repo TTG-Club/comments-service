@@ -300,6 +300,10 @@ public class CommentService
     /**
      * Мягко удаляет комментарий (статус DELETED, ветка ответов скрывается из выдачи). Автор
      * удаляет только свой; модератор и администратор ({@code canModerate == true}) — любой.
+     * <p>
+     * Удаление мягкое во всём: строка и её текст остаются в базе, публично не отдаются нигде,
+     * но видны модератору в {@code /moderation}. Восстановления «для пользователя» при этом нет —
+     * снять статус DELETED через API нельзя, в том числе разблокировкой автора.
      */
     @Transactional
     public void deleteComment(
@@ -318,11 +322,22 @@ public class CommentService
             return;
         }
 
+        // Вычитать из счётчиков предков нужно только то, что в них входило. В счётчики входят
+        // лишь PUBLISHED-узлы, поэтому удаление уже скрытого баном комментария (его видно
+        // модератору в общем списке) не должно вычитать его повторно — пересчёт при скрытии
+        // уже убрал его вместе с поддеревом, и вычитание задвоилось бы.
+        final boolean wasCountedInAncestors = comment.getStatus() == CommentStatus.PUBLISHED;
+
         // Из счётчиков предков уходит сам комментарий и всё его достижимое поддерево.
         final int removedFromTotals = 1 + safeTotalReplyCount(comment);
 
         comment.markAsDeleted();
         commentRepository.save(comment);
+
+        if (!wasCountedInAncestors)
+        {
+            return;
+        }
 
         if (comment.getParentId() != null)
         {
@@ -330,6 +345,58 @@ public class CommentService
         }
 
         adjustAncestorTotals(comment.getParentId(), -removedFromTotals);
+    }
+
+    /**
+     * Скрывает все опубликованные комментарии автора — вызывается auth-service при блокировке
+     * пользователя. Меняется только статус, поэтому разблокировка возвращает комментарии как есть.
+     * От {@link #deleteComment} отличается именно обратимостью: удаление пользователь делает сам
+     * и разбан его отменять не должен.
+     *
+     * @return сколько комментариев скрыто; 0, если скрывать было нечего
+     */
+    @Transactional
+    public int hideCommentsByAuthor(final UUID authorId)
+    {
+        return applyAuthorVisibilityChange(commentRepository.hidePublishedByAuthor(authorId));
+    }
+
+    /**
+     * Возвращает в выдачу комментарии, скрытые баном автора, — вызывается auth-service при
+     * разблокировке. Удалённые самим пользователем не воскресают: условие по исходному статусу
+     * в запросе отбирает только HIDDEN_BY_BAN.
+     *
+     * @return сколько комментариев восстановлено; 0, если восстанавливать было нечего
+     */
+    @Transactional
+    public int restoreCommentsByAuthor(final UUID authorId)
+    {
+        return applyAuthorVisibilityChange(commentRepository.restoreHiddenByBanByAuthor(authorId));
+    }
+
+    /**
+     * Общий хвост скрытия и восстановления: пересчитать счётчики ответов, если видимость
+     * действительно поменялась.
+     * <p>
+     * Дельты здесь неприменимы — у забаненного автора комментарии могут быть вложены друг
+     * в друга, и вычитание {@code 1 + totalReplyCount} по каждому задвоилось бы. Пересчёт
+     * с нуля даёт один и тот же результат независимо от формы дерева и от числа вызовов.
+     * <p>
+     * При {@code affected == 0} пересчёт пропускается: ничего не изменилось, а значит и
+     * счётчики прежние. Это делает повторный вызов (идемпотентный по построению запроса)
+     * ещё и дешёвым — без обхода всего дерева комментариев.
+     */
+    private int applyAuthorVisibilityChange(final int affected)
+    {
+        if (affected == 0)
+        {
+            return 0;
+        }
+
+        commentRepository.recalculateReplyCounts();
+        commentRepository.recalculateTotalReplyCounts();
+
+        return affected;
     }
 
     /**

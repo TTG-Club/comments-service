@@ -119,6 +119,23 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!--
+			Массовое скрытие/восстановление комментариев пересчитывает счётчики ответов
+			рекурсивным CTE и UPDATE ... FROM — это синтаксис PostgreSQL, на встроенной БД
+			его не проверить. Поэтому соответствующие тесты поднимают настоящий PostgreSQL
+			в контейнере. Без Docker они пропускаются (см. CommentBanVisibilityIntegrationTest).
+		-->
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 	</dependencies>
 
 	<build>

@@ -86,11 +86,18 @@ public class Comment
         editedAt = OffsetDateTime.now();
     }
 
+    /**
+     * Мягкое удаление: комментарий уходит из всех публичных выдач (они фильтруют по
+     * {@link CommentStatus#PUBLISHED}), но строка и её текст остаются в базе.
+     * <p>
+     * Текст намеренно не затирается: сервис ничего не удаляет безвозвратно. Полный текст
+     * удалённого комментария остаётся доступен модератору и администратору в списках
+     * {@code /api/v1/comments/moderation} — публично он не отдаётся нигде.
+     */
     public void markAsDeleted()
     {
         status = CommentStatus.DELETED;
         deletedAt = OffsetDateTime.now();
-        content = "";
     }
 
     @Override

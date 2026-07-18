@@ -117,6 +117,44 @@ class CommentServiceTest
         verify(commentRepository).addToTotalReplyCount(grandparent.getId(), -4);
     }
 
+    /**
+     * Сервис ничего не удаляет безвозвратно: мягкое удаление меняет статус и проставляет
+     * deletedAt, но текст остаётся в базе. Публично он не отдаётся (все выдачи фильтруют
+     * PUBLISHED), зато остаётся доступен модератору в /moderation.
+     */
+    @Test
+    void deleteKeepsCommentContentInDatabase()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        final Comment comment = published(UUID.randomUUID(), null);
+        comment.setAuthorId(authorId);
+        comment.setContent("исходный текст");
+
+        stubFindById(comment);
+
+        commentService.deleteComment(comment.getId(), authorId, false);
+
+        assertThat(comment.isDeleted()).isTrue();
+        assertThat(comment.getDeletedAt()).isNotNull();
+        assertThat(comment.getContent()).isEqualTo("исходный текст");
+    }
+
+    /** То же для удаления модератором: чужой комментарий тоже не затирается. */
+    @Test
+    void moderatorDeleteKeepsCommentContentInDatabase()
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        comment.setContent("чужой текст");
+
+        stubFindById(comment);
+
+        commentService.deleteComment(comment.getId(), UUID.randomUUID(), true);
+
+        assertThat(comment.isDeleted()).isTrue();
+        assertThat(comment.getContent()).isEqualTo("чужой текст");
+    }
+
     @Test
     void deleteOrphanStopsAtDeletedAncestorAndLeavesRootUntouched()
     {
@@ -337,6 +375,27 @@ class CommentServiceTest
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
         assertThat(responseFor(page, parent.getId()).getParentAuthorName()).isNull();
+    }
+
+    /**
+     * Обратная сторона того, что текст больше не затирается: в модераторском списке (он идёт
+     * без фильтра по статусу) виден полный текст удалённого комментария. Публично он не
+     * доступен нигде — все пользовательские выдачи фильтруют PUBLISHED.
+     */
+    @Test
+    void moderationListShowsContentOfDeletedComment()
+    {
+        final Comment deleted = published(UUID.randomUUID(), null);
+        deleted.setContent("удалённый текст");
+        deleted.markAsDeleted();
+
+        when(commentRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(deleted)));
+
+        final Page<CommentResponse> page = commentService.getAllComments(PageRequest.of(0, 20));
+
+        assertThat(responseFor(page, deleted.getId()).getContent()).isEqualTo("удалённый текст");
+        assertThat(responseFor(page, deleted.getId()).getStatus()).isEqualTo(CommentStatus.DELETED);
     }
 
     @Test
