@@ -56,7 +56,7 @@ public class CommentService
                 Sort.by(Sort.Direction.DESC, "createdAt")
         );
 
-        return commentRepository.findAll(sortedByNewest).map(commentMapper::toResponse);
+        return commentRepository.findAll(sortedByNewest).map(this::buildResponse);
     }
 
     @Transactional(readOnly = true)
@@ -69,7 +69,7 @@ public class CommentService
         );
 
         return commentRepository.findByDislikeCountGreaterThan(0, sortedByDislikes)
-                .map(commentMapper::toResponse);
+                .map(this::buildResponse);
     }
 
     @Transactional
@@ -240,17 +240,24 @@ public class CommentService
         return buildResponse(savedReply);
     }
 
+    /**
+     * Редактирует текст комментария. Автор правит только свой; модератор и администратор
+     * ({@code canModerate == true}) — любой (модерация оскорбительного текста без удаления
+     * всей ветки). {@code authorId}/{@code authorNameSnapshot} не меняются, {@code editedAt}
+     * обновляется как при обычной правке.
+     */
     @Transactional
     public CommentResponse updateComment(
             final UUID commentId,
-            final UUID authorId,
-            final UpdateCommentRequest request
+            final UUID userId,
+            final UpdateCommentRequest request,
+            final boolean canModerate
     )
     {
         final Comment comment = commentRepository.findById(commentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
 
-        validateCommentOwnership(comment, authorId);
+        validateCommentAccess(comment, userId, canModerate);
 
         if (comment.isDeleted())
         {
@@ -263,16 +270,21 @@ public class CommentService
         return buildResponse(commentRepository.save(comment));
     }
 
+    /**
+     * Мягко удаляет комментарий (статус DELETED, ветка ответов скрывается из выдачи). Автор
+     * удаляет только свой; модератор и администратор ({@code canModerate == true}) — любой.
+     */
     @Transactional
     public void deleteComment(
             final UUID commentId,
-            final UUID authorId
+            final UUID userId,
+            final boolean canModerate
     )
     {
         final Comment comment = commentRepository.findById(commentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
 
-        validateCommentOwnership(comment, authorId);
+        validateCommentAccess(comment, userId, canModerate);
 
         if (comment.isDeleted())
         {
@@ -339,12 +351,22 @@ public class CommentService
         }
     }
 
-    private void validateCommentOwnership(
+    /**
+     * Модератор и администратор ({@code canModerate == true}) правят/удаляют любой комментарий;
+     * обычный пользователь — только свой, иначе 403.
+     */
+    private void validateCommentAccess(
             final Comment comment,
-            final UUID authorId
+            final UUID userId,
+            final boolean canModerate
     )
     {
-        if (!comment.getAuthorId().equals(authorId))
+        if (canModerate)
+        {
+            return;
+        }
+
+        if (!comment.getAuthorId().equals(userId))
         {
             throw new CommentAccessDeniedException("You can modify only your own comment");
         }

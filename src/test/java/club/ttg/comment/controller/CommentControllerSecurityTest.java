@@ -2,6 +2,8 @@ package club.ttg.comment.controller;
 
 import club.ttg.comment.config.SecurityConfig;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.exception.CommentAccessDeniedException;
+import club.ttg.comment.exception.GlobalExceptionHandler;
 import club.ttg.comment.service.CommentService;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -26,9 +28,15 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -37,7 +45,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * как их выпускает auth-service, и проходят через настоящий JwtDecoder.
  */
 @WebMvcTest(CommentController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, GlobalExceptionHandler.class})
 @TestPropertySource(properties = "auth-service.jwt-secret=" + CommentControllerSecurityTest.SECRET)
 class CommentControllerSecurityTest
 {
@@ -173,6 +181,69 @@ class CommentControllerSecurityTest
         mockMvc.perform(get("/api/v1/comments/moderation/disliked")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void adminReadsModeration() throws Exception
+    {
+        given(commentService.getAllComments(any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void adminReadsDislikedComments() throws Exception
+    {
+        // Часть админов сайта имеет только роль ADMIN без MODERATOR, а админка ходит сюда.
+        given(commentService.getDislikedComments(any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/moderation/disliked")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void adminDeletesSomeoneElsesComment() throws Exception
+    {
+        final UUID commentId = UUID.randomUUID();
+
+        mockMvc.perform(delete("/api/v1/comments/" + commentId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isNoContent());
+
+        // Роль ADMIN должна дойти до сервиса флагом canModerate == true.
+        verify(commentService).deleteComment(eq(commentId), any(UUID.class), eq(true));
+    }
+
+    @Test
+    void moderatorEditsSomeoneElsesComment() throws Exception
+    {
+        final UUID commentId = UUID.randomUUID();
+        given(commentService.updateComment(any(UUID.class), any(UUID.class), any(), anyBoolean()))
+                .willReturn(new CommentResponse());
+
+        mockMvc.perform(patch("/api/v1/comments/" + commentId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR")))
+                        .contentType("application/json")
+                        .content("{\"content\":\"отмодерировано\"}"))
+                .andExpect(status().isOk());
+
+        verify(commentService).updateComment(eq(commentId), any(UUID.class), any(), eq(true));
+    }
+
+    @Test
+    void plainUserForbiddenOnSomeoneElsesComment() throws Exception
+    {
+        final UUID commentId = UUID.randomUUID();
+        // Обычный пользователь: canModerate == false, сервис отклоняет чужой комментарий 403.
+        doThrow(new CommentAccessDeniedException("You can modify only your own comment"))
+                .when(commentService).deleteComment(eq(commentId), any(UUID.class), eq(false));
+
+        mockMvc.perform(delete("/api/v1/comments/" + commentId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"))))
+                .andExpect(status().isForbidden());
     }
 
     @Test

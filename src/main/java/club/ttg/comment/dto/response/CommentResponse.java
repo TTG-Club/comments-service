@@ -27,7 +27,7 @@ public class CommentResponse
 
     @Schema(description = "Имя автора родительского комментария — кому отвечали. "
             + "Заполняется для ответов (parentId != null), если родитель опубликован; "
-            + "null для корневых. В модераторских списках не заполняется.")
+            + "null для корневых, а также если родитель удалён или скрыт.")
     private String parentAuthorName;
 
     @Schema(description = "ID автора")

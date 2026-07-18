@@ -64,7 +64,7 @@ public class CommentController
     @Operation(
             summary = "Все комментарии (модерация)",
             description = "Возвращает все комментарии независимо от статуса, постранично, "
-                    + "отсортированные от самого нового к старому. Доступно только модератору."
+                    + "отсортированные от самого нового к старому. Доступно модератору и администратору."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Страница комментариев"),
@@ -85,7 +85,7 @@ public class CommentController
             summary = "Комментарии с жалобами (модерация)",
             description = "Возвращает комментарии, на которые есть хотя бы одна жалоба (дизлайк), "
                     + "постранично, отсортированные по числу жалоб (от большего к меньшему). "
-                    + "Доступно только модератору."
+                    + "Доступно модератору и администратору."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Страница комментариев с жалобами"),
@@ -252,13 +252,16 @@ public class CommentController
     @SecurityRequirement(name = "bearerAuth")
     @Operation(
             summary = "Редактировать комментарий",
-            description = "Изменяет текст комментария. Доступно только автору комментария."
+            description = "Изменяет текст комментария. Доступно автору, модератору и администратору. "
+                    + "authorId/authorName при этом не меняются."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Комментарий обновлён"),
             @ApiResponse(responseCode = "400", description = "Некорректные данные запроса", content = @Content),
             @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
-            @ApiResponse(responseCode = "403", description = "Можно менять только свой комментарий", content = @Content),
+            @ApiResponse(responseCode = "403",
+                    description = "Можно менять только свой комментарий (кроме модератора и администратора)",
+                    content = @Content),
             @ApiResponse(responseCode = "404", description = "Комментарий не найден", content = @Content),
             @ApiResponse(responseCode = "409", description = "Комментарий уже удалён", content = @Content)
     })
@@ -272,7 +275,8 @@ public class CommentController
         return commentService.updateComment(
                 commentId,
                 extractUserId(jwt),
-                request
+                request,
+                canModerate(jwt)
         );
     }
 
@@ -280,12 +284,15 @@ public class CommentController
     @SecurityRequirement(name = "bearerAuth")
     @Operation(
             summary = "Удалить комментарий",
-            description = "Мягкое удаление комментария (статус DELETED). Доступно только автору."
+            description = "Мягкое удаление комментария (статус DELETED). "
+                    + "Доступно автору, модератору и администратору."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "204", description = "Комментарий удалён"),
             @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
-            @ApiResponse(responseCode = "403", description = "Можно удалять только свой комментарий", content = @Content),
+            @ApiResponse(responseCode = "403",
+                    description = "Можно удалять только свой комментарий (кроме модератора и администратора)",
+                    content = @Content),
             @ApiResponse(responseCode = "404", description = "Комментарий не найден", content = @Content)
     })
     public ResponseEntity<Void> deleteComment(
@@ -294,13 +301,24 @@ public class CommentController
             @Parameter(hidden = true) @AuthenticationPrincipal final Jwt jwt
     )
     {
-        commentService.deleteComment(commentId, extractUserId(jwt));
+        commentService.deleteComment(commentId, extractUserId(jwt), canModerate(jwt));
         return ResponseEntity.noContent().build();
     }
 
     private UUID extractUserId(final Jwt jwt)
     {
         return UUID.fromString(jwt.getSubject());
+    }
+
+    /**
+     * true, если у пользователя есть роль модератора или администратора — им разрешено
+     * править и удалять любой комментарий. Роли берутся из claim "roles" JWT, как и в
+     * SecurityConfig при построении authorities.
+     */
+    private boolean canModerate(final Jwt jwt)
+    {
+        final List<String> roles = jwt.getClaimAsStringList("roles");
+        return roles != null && (roles.contains("MODERATOR") || roles.contains("ADMIN"));
     }
 
     private String extractUserName(final Jwt jwt)

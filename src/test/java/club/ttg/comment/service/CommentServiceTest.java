@@ -1,7 +1,9 @@
 package club.ttg.comment.service;
 
 import club.ttg.comment.dto.request.CreateCommentRequest;
+import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.exception.CommentAccessDeniedException;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
@@ -10,7 +12,12 @@ import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -94,7 +101,7 @@ class CommentServiceTest
 
         stubFindById(grandparent, parent);
 
-        commentService.deleteComment(parent.getId(), authorId);
+        commentService.deleteComment(parent.getId(), authorId, false);
 
         assertThat(parent.isDeleted()).isTrue();
         verify(commentRepository).addToReplyCount(grandparent.getId(), -1);
@@ -118,7 +125,7 @@ class CommentServiceTest
 
         stubFindById(root, deletedMiddle, orphan);
 
-        commentService.deleteComment(orphan.getId(), authorId);
+        commentService.deleteComment(orphan.getId(), authorId, false);
 
         assertThat(orphan.isDeleted()).isTrue();
         verify(commentRepository).addToReplyCount(deletedMiddle.getId(), -1);
@@ -229,6 +236,104 @@ class CommentServiceTest
                 .isInstanceOf(EntityNotFoundException.class);
     }
 
+    @Test
+    void moderatorDeletesSomeoneElsesComment()
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        stubFindById(comment);
+
+        // userId — не автор; canModerate == true даёт право удалить чужой.
+        commentService.deleteComment(comment.getId(), UUID.randomUUID(), true);
+
+        assertThat(comment.isDeleted()).isTrue();
+    }
+
+    @Test
+    void plainUserCannotDeleteSomeoneElsesComment()
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        stubFindById(comment);
+
+        assertThatThrownBy(() -> commentService.deleteComment(comment.getId(), UUID.randomUUID(), false))
+                .isInstanceOf(CommentAccessDeniedException.class);
+        assertThat(comment.isDeleted()).isFalse();
+    }
+
+    @Test
+    void moderatorEditsSomeoneElsesCommentWithoutChangingAuthor()
+    {
+        final UUID originalAuthorId = UUID.randomUUID();
+        final Comment comment = published(UUID.randomUUID(), null);
+        comment.setAuthorId(originalAuthorId);
+        comment.setAuthorNameSnapshot("автор");
+        stubFindById(comment);
+
+        final CommentResponse response = commentService.updateComment(
+                comment.getId(), UUID.randomUUID(), updateRequest("отмодерировано"), true);
+
+        assertThat(response.getContent()).isEqualTo("отмодерировано");
+        assertThat(comment.getEditedAt()).isNotNull();
+        assertThat(comment.getAuthorId()).isEqualTo(originalAuthorId);
+        assertThat(comment.getAuthorNameSnapshot()).isEqualTo("автор");
+    }
+
+    @Test
+    void plainUserCannotEditSomeoneElsesComment()
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        stubFindById(comment);
+
+        assertThatThrownBy(() -> commentService.updateComment(
+                comment.getId(), UUID.randomUUID(), updateRequest("правка"), false))
+                .isInstanceOf(CommentAccessDeniedException.class);
+    }
+
+    @Test
+    void moderationListFillsParentAuthorNameForReplies()
+    {
+        final Comment parent = published(UUID.randomUUID(), null);
+        parent.setAuthorNameSnapshot("родитель");
+
+        final Comment reply = published(UUID.randomUUID(), parent.getId());
+        reply.setAuthorNameSnapshot("отвечающий");
+
+        when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
+        when(commentRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(parent, reply)));
+
+        final Page<CommentResponse> page = commentService.getAllComments(PageRequest.of(0, 20));
+
+        assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
+        assertThat(responseFor(page, parent.getId()).getParentAuthorName()).isNull();
+    }
+
+    @Test
+    void dislikedModerationListFillsParentAuthorNameForReplies()
+    {
+        final Comment parent = published(UUID.randomUUID(), null);
+        parent.setAuthorNameSnapshot("родитель");
+
+        final Comment reply = published(UUID.randomUUID(), parent.getId());
+        reply.setAuthorNameSnapshot("отвечающий");
+        reply.setDislikeCount(2);
+
+        when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
+        when(commentRepository.findByDislikeCountGreaterThan(eq(0), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(reply)));
+
+        final Page<CommentResponse> page = commentService.getDislikedComments(PageRequest.of(0, 20));
+
+        assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
+    }
+
+    private static CommentResponse responseFor(final Page<CommentResponse> page, final UUID id)
+    {
+        return page.getContent().stream()
+                .filter(response -> id.equals(response.getId()))
+                .findFirst()
+                .orElseThrow();
+    }
+
     private static Comment published(final UUID id, final UUID parentId)
     {
         final Comment comment = new Comment();
@@ -256,6 +361,13 @@ class CommentServiceTest
     private static CreateCommentRequest request(final String content)
     {
         final CreateCommentRequest request = new CreateCommentRequest();
+        request.setContent(content);
+        return request;
+    }
+
+    private static UpdateCommentRequest updateRequest(final String content)
+    {
+        final UpdateCommentRequest request = new UpdateCommentRequest();
         request.setContent(content);
         return request;
     }

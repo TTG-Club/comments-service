@@ -62,7 +62,8 @@ public class SecurityConfig
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(SWAGGER_WHITELIST).permitAll()
-                        .requestMatchers(HttpMethod.GET, MODERATION_PATH, MODERATION_PATH_PATTERN).hasRole("MODERATOR")
+                        .requestMatchers(HttpMethod.GET, MODERATION_PATH, MODERATION_PATH_PATTERN)
+                        .hasAnyRole("MODERATOR", "ADMIN")
                         .requestMatchers(
                                 HttpMethod.GET,
                                 PUBLIC_ROOT_COMMENTS_PATH,
