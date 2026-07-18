@@ -171,6 +171,26 @@ public class CommentController
         return ResponseEntity.ok(commentService.getCommentCount(section, url));
     }
 
+    @GetMapping("/my/count")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(
+            summary = "Число комментариев текущего пользователя",
+            description = "Возвращает количество опубликованных комментариев пользователя из токена "
+                    + "(клейм sub) — для статистики в профиле. Учитываются и корневые комментарии, "
+                    + "и ответы. Удалённые, отклонённые модерацией и помеченные как спам в счётчик "
+                    + "не входят: в профиле показывается «живой» вклад пользователя."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Количество комментариев"),
+            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content)
+    })
+    public ResponseEntity<Long> getMyCommentCount(
+            @Parameter(hidden = true) @AuthenticationPrincipal final Jwt jwt
+    )
+    {
+        return ResponseEntity.ok(commentService.getUserCommentCount(extractUserId(jwt)));
+    }
+
     @GetMapping("/latest")
     @Operation(
             summary = "Последний комментарий страницы",

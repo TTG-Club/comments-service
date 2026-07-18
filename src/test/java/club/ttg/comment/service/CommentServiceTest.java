@@ -237,6 +237,30 @@ class CommentServiceTest
     }
 
     @Test
+    void userCommentCountSkipsDeleted()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        final Comment first = authoredBy(authorId);
+        final Comment second = authoredBy(authorId);
+        final Comment deleted = authoredBy(authorId);
+        deleted.markAsDeleted();
+
+        stubCountByAuthorAndStatus(first, second, deleted);
+
+        // Удалённый в «живой» вклад профиля не входит.
+        assertThat(commentService.getUserCommentCount(authorId)).isEqualTo(2);
+    }
+
+    @Test
+    void userCommentCountIsZeroWithoutComments()
+    {
+        stubCountByAuthorAndStatus();
+
+        assertThat(commentService.getUserCommentCount(UUID.randomUUID())).isZero();
+    }
+
+    @Test
     void moderatorDeletesSomeoneElsesComment()
     {
         final Comment comment = published(UUID.randomUUID(), null);
@@ -348,6 +372,32 @@ class CommentServiceTest
         comment.setTotalReplyCount(0);
         comment.setDislikeCount(0);
         return comment;
+    }
+
+    private static Comment authoredBy(final UUID authorId)
+    {
+        final Comment comment = published(UUID.randomUUID(), null);
+        comment.setAuthorId(authorId);
+        return comment;
+    }
+
+    /**
+     * Считает по переданным комментариям так же, как это сделала бы БД по derived-запросу —
+     * с фильтром и по автору, и по статусу. Благодаря этому тест ловит подсчёт не того статуса,
+     * а не просто возвращает заранее заданное число.
+     */
+    private void stubCountByAuthorAndStatus(final Comment... comments)
+    {
+        when(commentRepository.countByAuthorIdAndStatus(any(UUID.class), any(CommentStatus.class)))
+                .thenAnswer(invocation -> {
+                    final UUID authorId = invocation.getArgument(0);
+                    final CommentStatus status = invocation.getArgument(1);
+
+                    return List.of(comments).stream()
+                            .filter(comment -> authorId.equals(comment.getAuthorId()))
+                            .filter(comment -> comment.getStatus() == status)
+                            .count();
+                });
     }
 
     private void stubFindById(final Comment... comments)

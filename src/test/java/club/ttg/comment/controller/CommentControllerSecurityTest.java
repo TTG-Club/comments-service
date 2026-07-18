@@ -38,6 +38,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -137,6 +138,30 @@ class CommentControllerSecurityTest
 
         mockMvc.perform(get("/api/v1/comments/" + UUID.randomUUID() + "?v=123"))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void guestCannotReadOwnCommentCount() throws Exception
+    {
+        // Статистика профиля приватна: /my/count не подпадает ни под один публичный паттерн
+        // и остаётся под anyRequest().authenticated().
+        mockMvc.perform(get("/api/v1/comments/my/count"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void userReadsOwnCommentCount() throws Exception
+    {
+        final UUID userId = UUID.randomUUID();
+        given(commentService.getUserCommentCount(userId)).willReturn(2L);
+
+        mockMvc.perform(get("/api/v1/comments/my/count")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"), userId)))
+                .andExpect(status().isOk())
+                .andExpect(content().string("2"));
+
+        // Считаем по sub из токена, а не по чему-либо из запроса.
+        verify(commentService).getUserCommentCount(userId);
     }
 
     @Test
@@ -256,10 +281,15 @@ class CommentControllerSecurityTest
 
     private static String issueToken(final List<String> roles)
     {
+        return issueToken(roles, UUID.randomUUID());
+    }
+
+    private static String issueToken(final List<String> roles, final UUID userId)
+    {
         final SecretKey key = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
 
         return Jwts.builder()
-                .subject(UUID.randomUUID().toString())
+                .subject(userId.toString())
                 .claim("username", "peterko")
                 .claim("roles", roles)
                 .issuedAt(Date.from(Instant.now().minus(1, ChronoUnit.MINUTES)))

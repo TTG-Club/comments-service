@@ -146,6 +146,17 @@ public class CommentService
     }
 
     /**
+     * Число комментариев пользователя для его профиля. Считаются только PUBLISHED: удалённые,
+     * отклонённые модерацией и спам в «живой» вклад не входят. Ответы от корневых комментариев
+     * не отличаются — учитывается всё написанное пользователем.
+     */
+    @Transactional(readOnly = true)
+    public long getUserCommentCount(final UUID authorId)
+    {
+        return commentRepository.countByAuthorIdAndStatus(authorId, CommentStatus.PUBLISHED);
+    }
+
+    /**
      * Самый свежий опубликованный комментарий страницы с учётом ответов (для свёрнутого
      * блока на фронте). {@code parentAuthorName} заполняется, только если это ответ —
      * тогда в нём имя автора родителя (кому отвечали) для подписи в превью.

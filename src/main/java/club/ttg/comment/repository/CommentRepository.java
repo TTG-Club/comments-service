@@ -59,6 +59,11 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
             CommentStatus status
     );
 
+    long countByAuthorIdAndStatus(
+            UUID authorId,
+            CommentStatus status
+    );
+
     Page<Comment> findByDislikeCountGreaterThan(
             int dislikeCount,
             Pageable pageable

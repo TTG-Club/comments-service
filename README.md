@@ -136,6 +136,7 @@ java -jar target/comment.ttg.club.jar
 | `GET` | `/api/v1/comments?section={section}&url={url}` | Корневые комментарии страницы (постранично, размер по умолчанию 20) | — |
 | `GET` | `/api/v1/comments/{parentId}/replies` | Ответы на комментарий | — |
 | `GET` | `/api/v1/comments/count?section={section}&url={url}` | Число опубликованных комментариев | — |
+| `GET` | `/api/v1/comments/my/count` | Число опубликованных комментариев текущего пользователя (для профиля) | JWT |
 | `POST` | `/api/v1/comments` | Создать корневой комментарий | JWT |
 | `POST` | `/api/v1/comments/{parentId}/replies` | Создать ответ | JWT |
 | `PATCH` | `/api/v1/comments/{commentId}` | Отредактировать свой комментарий | JWT |
