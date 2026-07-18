@@ -47,7 +47,15 @@ class CommentServiceTest
     {
         commentRepository = mock(CommentRepository.class);
         final CommentComplaintRepository complaintRepository = mock(CommentComplaintRepository.class);
-        commentService = new CommentService(commentRepository, complaintRepository, new CommentMapperImpl());
+
+        // Лимитер здесь замокан и всегда пропускает: его поведение проверяется отдельно
+        // в CommentRateLimitServiceTest.
+        commentService = new CommentService(
+                commentRepository,
+                complaintRepository,
+                new CommentMapperImpl(),
+                mock(CommentRateLimitService.class)
+        );
 
         when(commentRepository.save(any(Comment.class))).thenAnswer(invocation -> invocation.getArgument(0));
     }
@@ -60,7 +68,7 @@ class CommentServiceTest
 
         stubFindById(grandparent, parent);
 
-        commentService.createReply(parent.getId(), request("ответ"), UUID.randomUUID(), "user");
+        commentService.createReply(parent.getId(), request("ответ"), UUID.randomUUID(), "user", false);
 
         // Прямых детей родителя +1, число потомков +1 у родителя и деда.
         verify(commentRepository).addToReplyCount(parent.getId(), 1);
@@ -80,7 +88,7 @@ class CommentServiceTest
 
         stubFindById(root, deletedMiddle, orphan);
 
-        commentService.createReply(orphan.getId(), request("ответ осиротевшему"), UUID.randomUUID(), "user");
+        commentService.createReply(orphan.getId(), request("ответ осиротевшему"), UUID.randomUUID(), "user", false);
 
         verify(commentRepository).addToReplyCount(orphan.getId(), 1);
         verify(commentRepository).addToTotalReplyCount(orphan.getId(), 1);

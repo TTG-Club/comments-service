@@ -27,3 +27,16 @@ spring:
 auth-service:
   jwt-secret: ${AUTH_SERVICE_JWT_SECRET}
 
+# Антиспам на создание комментариев и ответов, на пользователя.
+# intervals — минимальный промежуток между комментариями по мере роста серии нарушений:
+# сначала 20с, после первого нарушения 60с, после следующего вместо очередного ужесточения
+# выдаётся бан на block-duration. Через violation-decay без нарушений серия обнуляется.
+comments:
+  rate-limit:
+    enabled: ${COMMENTS_RATE_LIMIT_ENABLED:true}
+    intervals:
+      - 20s
+      - 60s
+    block-duration: 3h
+    violation-decay: 1h
+

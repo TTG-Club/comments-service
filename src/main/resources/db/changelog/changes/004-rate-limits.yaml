@@ -1,0 +1,50 @@
+databaseChangeLog:
+  - changeSet:
+      id: create-comment-rate-limits-table
+      author: ttg
+      comment: >-
+        Состояние антиспам-лимита на пользователя. Одна строка на автора, ключ —
+        author_id: пользователи живут в auth-service, поэтому FK здесь нет.
+        Хранится в БД, а не в памяти процесса: контейнер перезапускается при каждом
+        деплое, а бан на 3 часа должен это пережить.
+      changes:
+        - createTable:
+            schemaName: comment
+            tableName: comment_rate_limits
+            columns:
+              - column:
+                  name: author_id
+                  type: UUID
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+
+              # Время последнего УСПЕШНО созданного комментария — от него считается
+              # интервал до следующего. Отклонённые попытки его не двигают, иначе
+              # спамер, долбящий эндпоинт, не смог бы отправить комментарий никогда.
+              - column:
+                  name: last_comment_at
+                  type: TIMESTAMP WITH TIME ZONE
+
+              # Длина текущей серии нарушений: 0 — интервал 20с, 1 — 60с, дальше бан.
+              - column:
+                  name: violation_level
+                  type: INT
+                  defaultValueNumeric: 0
+                  constraints:
+                    nullable: false
+
+              # Для остывания: через час без нарушений серия сбрасывается в 0.
+              - column:
+                  name: last_violation_at
+                  type: TIMESTAMP WITH TIME ZONE
+
+              - column:
+                  name: blocked_until
+                  type: TIMESTAMP WITH TIME ZONE
+
+              - column:
+                  name: updated_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false

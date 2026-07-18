@@ -5,3 +5,5 @@ databaseChangeLog:
       file: db/changelog/changes/002-complaints.yaml
   - include:
       file: db/changelog/changes/003-total-reply-count.yaml
+  - include:
+      file: db/changelog/changes/004-rate-limits.yaml

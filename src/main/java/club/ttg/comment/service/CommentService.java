@@ -31,6 +31,7 @@ public class CommentService
     private final CommentRepository commentRepository;
     private final CommentComplaintRepository commentComplaintRepository;
     private final CommentMapper commentMapper;
+    private final CommentRateLimitService commentRateLimitService;
 
     @Transactional(readOnly = true)
     public Page<CommentResponse> getRootComments(
@@ -200,13 +201,20 @@ public class CommentService
                 .orElse(null);
     }
 
+    /**
+     * Создаёт корневой комментарий. Перед сохранением проверяется антиспам-лимит;
+     * {@code canModerate == true} освобождает от него модератора и администратора.
+     */
     @Transactional
     public CommentResponse createComment(
             final CreateCommentRequest request,
             final UUID authorId,
-            final String authorName
+            final String authorName,
+            final boolean canModerate
     )
     {
+        commentRateLimitService.ensureCanPost(authorId, canModerate);
+
         final CreateCommentRequest normalizedRequest = normalizeRequest(request);
 
         final Comment comment = commentMapper.toEntity(
@@ -219,18 +227,26 @@ public class CommentService
         return buildResponse(commentRepository.save(comment));
     }
 
+    /**
+     * Создаёт ответ. Антиспам-лимит общий с корневыми комментариями — иначе его можно было бы
+     * обойти, спамя ответами. Проверка идёт после проверок родителя: запрос к несуществующему
+     * или удалённому комментарию не должен тратить попытку автора.
+     */
     @Transactional
     public CommentResponse createReply(
             final UUID parentId,
             final CreateCommentRequest request,
             final UUID authorId,
-            final String authorName
+            final String authorName,
+            final boolean canModerate
     )
     {
         final Comment parent = commentRepository.findById(parentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + parentId));
 
         validateParentForReply(parent);
+
+        commentRateLimitService.ensureCanPost(authorId, canModerate);
 
         final Comment reply = commentMapper.toReply(
                 parent.getSection(),

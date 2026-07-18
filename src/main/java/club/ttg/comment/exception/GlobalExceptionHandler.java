@@ -2,8 +2,10 @@ package club.ttg.comment.exception;
 
 import jakarta.persistence.EntityNotFoundException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -41,6 +43,26 @@ public class GlobalExceptionHandler
     public ProblemDetail handleDataIntegrityViolation(final DataIntegrityViolationException ex)
     {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, "Конфликт: нарушение ограничения целостности");
+    }
+
+    /**
+     * Антиспам-лимит. Кроме 429 отдаётся стандартный {@code Retry-After} и дублирующее его
+     * поле {@code retryAfterSeconds} в теле — фронту удобнее читать из JSON, чтобы показать
+     * обратный отсчёт. {@code blocked} различает «не выдержан интервал» и «бан за серию».
+     */
+    @ExceptionHandler(CommentRateLimitException.class)
+    public ResponseEntity<ProblemDetail> handleRateLimit(final CommentRateLimitException ex)
+    {
+        final ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.TOO_MANY_REQUESTS,
+                ex.getMessage()
+        );
+        problem.setProperty("retryAfterSeconds", ex.getRetryAfterSeconds());
+        problem.setProperty("blocked", ex.isBlocked());
+
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
+                .body(problem);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

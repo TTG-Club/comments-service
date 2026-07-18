@@ -218,12 +218,19 @@ public class CommentController
     @SecurityRequirement(name = "bearerAuth")
     @Operation(
             summary = "Создать комментарий",
-            description = "Создаёт корневой комментарий от имени текущего пользователя (по JWT)."
+            description = "Создаёт корневой комментарий от имени текущего пользователя (по JWT). "
+                    + "Действует антиспам-лимит: не чаще раза в 20 секунд, после нарушения — раза в минуту, "
+                    + "после следующего — временная блокировка на 3 часа. Модератор и администратор от лимита "
+                    + "освобождены."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Комментарий создан"),
             @ApiResponse(responseCode = "400", description = "Некорректные данные запроса", content = @Content),
-            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content)
+            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
+            @ApiResponse(responseCode = "429",
+                    description = "Слишком часто. В заголовке Retry-After и в поле retryAfterSeconds — "
+                            + "через сколько секунд можно повторить; blocked=true означает блокировку за спам",
+                    content = @Content)
     })
     public ResponseEntity<CommentResponse> createComment(
             @Valid @RequestBody final CreateCommentRequest request,
@@ -233,7 +240,8 @@ public class CommentController
         final CommentResponse response = commentService.createComment(
                 request,
                 extractUserId(jwt),
-                extractUserName(jwt)
+                extractUserName(jwt),
+                canModerate(jwt)
         );
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
@@ -243,13 +251,18 @@ public class CommentController
     @SecurityRequirement(name = "bearerAuth")
     @Operation(
             summary = "Создать ответ",
-            description = "Создаёт ответ на существующий опубликованный комментарий."
+            description = "Создаёт ответ на существующий опубликованный комментарий. "
+                    + "Антиспам-лимит общий с корневыми комментариями."
     )
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Ответ создан"),
             @ApiResponse(responseCode = "400", description = "Некорректные данные запроса", content = @Content),
             @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content),
-            @ApiResponse(responseCode = "404", description = "Родительский комментарий не найден", content = @Content)
+            @ApiResponse(responseCode = "404", description = "Родительский комментарий не найден", content = @Content),
+            @ApiResponse(responseCode = "429",
+                    description = "Слишком часто. В заголовке Retry-After и в поле retryAfterSeconds — "
+                            + "через сколько секунд можно повторить; blocked=true означает блокировку за спам",
+                    content = @Content)
     })
     public ResponseEntity<CommentResponse> createReply(
             @Parameter(description = "ID родительского комментария", required = true)
@@ -262,7 +275,8 @@ public class CommentController
                 parentId,
                 request,
                 extractUserId(jwt),
-                extractUserName(jwt)
+                extractUserName(jwt),
+                canModerate(jwt)
         );
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
