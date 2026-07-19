@@ -11,3 +11,5 @@ databaseChangeLog:
       file: db/changelog/changes/005-comments-author-index.yaml
   - include:
       file: db/changelog/changes/006-tombstone-reply-counts.yaml
+  - include:
+      file: db/changelog/changes/007-ban-tombstone-reply-counts.yaml

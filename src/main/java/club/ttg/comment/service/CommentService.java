@@ -34,10 +34,11 @@ public class CommentService
     private final CommentRateLimitService commentRateLimitService;
 
     /**
-     * Корневые комментарии страницы. Кроме опубликованных, отдаются надгробия: удалённые
-     * комментарии, под которыми остались опубликованные ответы. Такой узел приходит со статусом
-     * DELETED и без текста и автора — {@link #buildPublicResponse} маскирует всё, кроме каркаса
-     * (id, счётчики, дата), чтобы фронт мог отрисовать «комментарий удалён» и ветку под ним.
+     * Корневые комментарии страницы. Кроме опубликованных, отдаются надгробия: удалённые либо
+     * скрытые при блокировке автора комментарии, под которыми остались опубликованные ответы.
+     * Такой узел приходит со статусом DELETED и без текста и автора — {@link #buildPublicResponse}
+     * маскирует всё, кроме каркаса (id, счётчики, дата), чтобы фронт мог отрисовать «комментарий
+     * удалён» и ветку под ним.
      */
     @Transactional(readOnly = true)
     public Page<CommentResponse> getRootComments(
@@ -103,7 +104,10 @@ public class CommentService
         final Comment comment = commentRepository.findById(commentId)
                 .orElseThrow(() -> new EntityNotFoundException("Comment not found: " + commentId));
 
-        if (comment.isDeleted())
+        // Надгробие в выдаче доступно по id, но комментарием уже не является: жалоба на него
+        // ничего не значила бы и только замусорила ленту модерации. Скрытый баном подпадает
+        // сюда же — клиент видит его удалённым и различать эти случаи не должен.
+        if (comment.isTombstoneStatus())
         {
             throw new CommentStateException("Cannot dislike deleted comment");
         }
@@ -213,13 +217,13 @@ public class CommentService
     }
 
     /**
-     * Версия {@link #buildResponse} для публичных выдач: удалённый комментарий отдаётся
-     * надгробием — без текста, автора и прочих следов содержимого. Модераторские выдачи
-     * этим билдером не пользуются: им удалённый текст нужен целиком.
+     * Версия {@link #buildResponse} для публичных выдач: скрытый комментарий с живой веткой
+     * отдаётся надгробием — без текста, автора и прочих следов содержимого. Модераторские
+     * выдачи этим билдером не пользуются: им скрытый текст нужен целиком.
      */
     private CommentResponse buildPublicResponse(final Comment comment)
     {
-        if (comment.isDeleted())
+        if (comment.isTombstoneStatus())
         {
             return buildTombstoneResponse(comment);
         }
@@ -230,12 +234,18 @@ public class CommentService
     /**
      * Надгробие: от комментария остаётся каркас — id, положение в дереве, счётчики и дата
      * создания (по ней фронт сортирует ветку). Текст, автор, снапшот имени, дизлайки и отметка
-     * о правке скрываются: удалённое не должно утекать в публичный API даже частями.
+     * о правке скрываются: скрытое не должно утекать в публичный API даже частями.
      * {@code parentAuthorName} не заполняется и ради этого же, и чтобы не делать лишний запрос.
+     * <p>
+     * Статус наружу всегда DELETED, в том числе у скрытого баном: публично оба надгробия
+     * неразличимы и должны такими остаться. Иначе HIDDEN_BY_BAN в открытой выдаче сообщал бы
+     * любому читателю, что автора заблокировали. В базе статус при этом не меняется — по нему
+     * {@link #restoreCommentsByAuthor} находит, что вернуть при разблокировке.
      */
     private CommentResponse buildTombstoneResponse(final Comment comment)
     {
         final CommentResponse response = commentMapper.toResponse(comment);
+        response.setStatus(CommentStatus.DELETED);
         response.setContent(null);
         response.setAuthorId(null);
         response.setAuthorName(null);
@@ -246,9 +256,9 @@ public class CommentService
     }
 
     /**
-     * Что видно в публичных выдачах: опубликованный комментарий либо надгробие — удалённый,
-     * под которым остались опубликованные потомки. Условие то же, что в запросах
-     * {@code findVisibleRootComments}/{@code findVisibleByParentId}.
+     * Что видно в публичных выдачах: опубликованный комментарий либо надгробие — удалённый или
+     * скрытый баном автора узел, под которым остались опубликованные потомки. Условие то же,
+     * что в запросах {@code findVisibleRootComments}/{@code findVisibleByParentId}.
      */
     private boolean isPubliclyVisible(final Comment comment)
     {
@@ -257,7 +267,7 @@ public class CommentService
             return true;
         }
 
-        return comment.isDeleted() && safeTotalReplyCount(comment) > 0;
+        return comment.isTombstoneStatus() && safeTotalReplyCount(comment) > 0;
     }
 
     private String resolveParentAuthorName(final UUID parentId)
@@ -408,10 +418,12 @@ public class CommentService
 
         if (!wasPublished)
         {
-            // Статус-барьер (HIDDEN_BY_BAN, REJECTED, SPAM) становится проницаемым DELETED:
+            // Статус-барьер (REJECTED, SPAM, PENDING_MODERATION) становится проницаемым DELETED:
             // опубликованные ответы, исключённые из счётчиков вместе с поддеревом барьера,
             // возвращаются в них через надгробие. Дельтой такую смену формы дерева не выразить —
             // только пересчётом с нуля (он же проставит надгробию его собственные счётчики).
+            // Для HIDDEN_BY_BAN форма дерева не меняется (он такое же проницаемое надгробие),
+            // но пересчёт идемпотентен, и отдельная ветка ради него не окупается.
             recalculateReplyCounters();
             return;
         }
@@ -490,6 +502,10 @@ public class CommentService
      * пользователя. Меняется только статус, поэтому разблокировка возвращает комментарии как есть.
      * От {@link #deleteComment} отличается именно обратимостью: удаление пользователь делает сам
      * и разбан его отменять не должен.
+     * <p>
+     * Ветки чужих ответов бан не уносит: скрытый комментарий, под которым остались опубликованные
+     * ответы, продолжает отдаваться публично надгробием — ровно как удалённый. Разница только
+     * в том, чем скрытие снимается: здесь разблокировкой автора, а не восстановлением узла.
      *
      * @return сколько комментариев скрыто; 0, если скрывать было нечего
      */
@@ -549,12 +565,12 @@ public class CommentService
 
     /**
      * Меняет {@code totalReplyCount} у всех предков, начиная с {@code startParentId} и выше,
-     * на {@code delta}. Удалённые предки обходу не мешают: надгробие держит свою ветку видимой,
+     * на {@code delta}. Надгробные предки обходу не мешают: надгробие держит свою ветку видимой,
      * поэтому его счётчик и счётчики узлов над ним должны отражать происходящее ниже — в том
      * числе чтобы надгробие исчезло из выдачи, когда под ним не останется опубликованного
      * ({@code totalReplyCount} упадёт до 0). Обход прекращается на предке в любом другом
-     * не-PUBLISHED статусе (HIDDEN_BY_BAN, REJECTED, SPAM): такое поддерево целиком исключено
-     * из счётчиков вышестоящих узлов, и изменение под ним их не касается.
+     * не-PUBLISHED статусе (REJECTED, SPAM, PENDING_MODERATION): такое поддерево целиком
+     * исключено из счётчиков вышестоящих узлов, и изменение под ним их не касается.
      */
     private void adjustAncestorTotals(
             final UUID startParentId,
@@ -579,11 +595,11 @@ public class CommentService
 
     /**
      * true для статусов-барьеров, чьё поддерево не входит в счётчики предков. PUBLISHED
-     * и DELETED (надгробие) для счётчиков проницаемы, остальные статусы — нет.
+     * и надгробные статусы (DELETED, HIDDEN_BY_BAN) для счётчиков проницаемы, остальные — нет.
      */
     private boolean blocksCountPropagation(final Comment comment)
     {
-        return comment.getStatus() != CommentStatus.PUBLISHED && !comment.isDeleted();
+        return comment.getStatus() != CommentStatus.PUBLISHED && !comment.isTombstoneStatus();
     }
 
     private int safeTotalReplyCount(final Comment comment)
@@ -593,7 +609,10 @@ public class CommentService
 
     private void validateParentForReply(final Comment parent)
     {
-        if (parent.isDeleted())
+        // Надгробие видно в выдаче, но живым узлом не является. Скрытому баном отвечать нельзя
+        // по той же причине — и отказ идёт с тем же текстом, чтобы бан автора не проступал
+        // наружу через сообщение об ошибке.
+        if (parent.isTombstoneStatus())
         {
             throw new CommentStateException("Cannot reply to deleted comment");
         }

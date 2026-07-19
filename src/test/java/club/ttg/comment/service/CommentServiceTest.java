@@ -258,6 +258,103 @@ class CommentServiceTest
                 .isInstanceOf(CommentStateException.class);
     }
 
+    /**
+     * Скрытый при бане автора комментарий с живой веткой — такое же надгробие, как удалённый,
+     * и наружу уходит под тем же статусом DELETED: публично эти два случая различать незачем,
+     * а HIDDEN_BY_BAN в открытой выдаче сообщал бы любому читателю, что автора заблокировали.
+     */
+    @Test
+    void getRootCommentsMaskBanTombstoneAsDeleted()
+    {
+        final Comment hidden = published(UUID.randomUUID(), null);
+        hidden.setContent("текст забаненного");
+        hidden.setAuthorNameSnapshot("забаненный");
+        hidden.setTotalReplyCount(1);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+
+        when(commentRepository.findVisibleRootComments(eq("blog"), eq("/posts/x"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(hidden)));
+
+        final CommentResponse masked =
+                commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent().get(0);
+
+        assertThat(masked.getStatus()).isEqualTo(CommentStatus.DELETED);
+        assertThat(masked.getContent()).isNull();
+        assertThat(masked.getAuthorId()).isNull();
+        assertThat(masked.getAuthorName()).isNull();
+        // Сущность в базе статус не меняет: по нему разблокировка находит, что вернуть.
+        assertThat(hidden.getStatus()).isEqualTo(CommentStatus.HIDDEN_BY_BAN);
+    }
+
+    /** Скрытый баном без живых потомков надгробием не становится — обычный 404. */
+    @Test
+    void getCommentThrowsForBanHiddenWithoutLiveReplies()
+    {
+        final Comment hidden = published(UUID.randomUUID(), null);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+        stubFindById(hidden);
+
+        assertThatThrownBy(() -> commentService.getComment(hidden.getId()))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    /**
+     * Отвечать на надгробие бана нельзя, как и на надгробие удаления. Текст отказа общий —
+     * иначе сообщение об ошибке выдавало бы блокировку автора.
+     */
+    @Test
+    void replyToBanTombstoneIsRejected()
+    {
+        final Comment hidden = published(UUID.randomUUID(), null);
+        hidden.setTotalReplyCount(1);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+        stubFindById(hidden);
+
+        assertThatThrownBy(() -> commentService.createReply(
+                hidden.getId(), request("ответ надгробию"), UUID.randomUUID(), "user", false))
+                .isInstanceOf(CommentStateException.class)
+                .hasMessageContaining("deleted");
+    }
+
+    /** Жалоба на надгробие бессмысленна и только замусорила бы ленту модерации. */
+    @Test
+    void dislikeOnBanTombstoneIsRejected()
+    {
+        final Comment hidden = published(UUID.randomUUID(), null);
+        hidden.setTotalReplyCount(1);
+        hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
+        stubFindById(hidden);
+
+        assertThatThrownBy(() -> commentService.dislikeComment(hidden.getId(), UUID.randomUUID()))
+                .isInstanceOf(CommentStateException.class);
+        verify(commentRepository, never()).incrementDislikeCount(any(UUID.class));
+    }
+
+    /**
+     * Надгробие бана проницаемо для счётчиков наравне с надгробием удаления: новый ответ под
+     * ним входит и в его счётчик (держит надгробие видимым), и в счётчик корня над ним. Пока
+     * HIDDEN_BY_BAN был барьером, ветка под комментарием забаненного выпадала из счётчиков
+     * предков — и уходила из выдачи вместе с ним.
+     */
+    @Test
+    void createReplyUnderBanTombstonePropagatesTotalsThroughItToRoot()
+    {
+        final Comment root = published(UUID.randomUUID(), null);
+
+        final Comment hiddenMiddle = published(UUID.randomUUID(), root.getId());
+        hiddenMiddle.setStatus(CommentStatus.HIDDEN_BY_BAN);
+
+        final Comment orphan = published(UUID.randomUUID(), hiddenMiddle.getId());
+
+        stubFindById(root, hiddenMiddle, orphan);
+
+        commentService.createReply(orphan.getId(), request("ответ осиротевшему"), UUID.randomUUID(), "user", false);
+
+        verify(commentRepository).addToTotalReplyCount(orphan.getId(), 1);
+        verify(commentRepository).addToTotalReplyCount(hiddenMiddle.getId(), 1);
+        verify(commentRepository).addToTotalReplyCount(root.getId(), 1);
+    }
+
     @Test
     void restoreReturnsDeletedCommentToPublished()
     {

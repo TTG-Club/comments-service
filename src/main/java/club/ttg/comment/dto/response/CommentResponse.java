@@ -10,9 +10,11 @@ import java.util.UUID;
 
 @Getter
 @Setter
-@Schema(description = "Комментарий. В публичных выдачах удалённый комментарий с живыми ответами "
+@Schema(description = "Комментарий. В публичных выдачах скрытый комментарий с живыми ответами "
         + "приходит надгробием: status = DELETED, content/authorId/authorName/editedAt/dislikeCount "
-        + "= null, остальные поля (id, parentId, счётчики, createdAt) заполнены.")
+        + "= null, остальные поля (id, parentId, счётчики, createdAt) заполнены. Надгробием "
+        + "приходит и удалённый, и скрытый при блокировке автора — публично они неразличимы, "
+        + "статус HIDDEN_BY_BAN встречается только в модерационных выдачах.")
 public class CommentResponse
 {
     @Schema(description = "Идентификатор комментария")

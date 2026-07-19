@@ -37,15 +37,20 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
 
     /**
      * Корневые комментарии страницы для публичной выдачи: опубликованные плюс «надгробия» —
-     * удалённые узлы, под которыми остались опубликованные потомки ({@code totalReplyCount > 0}).
-     * Надгробие держит ветку ответов видимой; удалённый комментарий без живых потомков
-     * в выдачу не попадает. Текст и автора надгробия маскирует сервис — запрос отдаёт строку
-     * целиком.
+     * скрытые узлы, под которыми остались опубликованные потомки ({@code totalReplyCount > 0}).
+     * Надгробие держит ветку ответов видимой; скрытый комментарий без живых потомков в выдачу
+     * не попадает. Текст и автора надгробия маскирует сервис — запрос отдаёт строку целиком.
+     * <p>
+     * Надгробием становятся оба статуса, скрывающих содержимое без обрыва ветки: DELETED
+     * (удалил автор или модератор) и HIDDEN_BY_BAN (скрыт при блокировке автора). Второй попал
+     * сюда не сразу: пока правило было завязано только на DELETED, блокировка автора уносила
+     * из выдачи и чужие ответы под его комментариями.
      */
     @Query("SELECT c FROM Comment c "
             + "WHERE c.section = :section AND c.url = :url AND c.parentId IS NULL "
             + "AND (c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
-            + "OR (c.status = club.ttg.comment.model.CommentStatus.DELETED AND c.totalReplyCount > 0)) "
+            + "OR (c.status IN (club.ttg.comment.model.CommentStatus.DELETED, "
+            + "club.ttg.comment.model.CommentStatus.HIDDEN_BY_BAN) AND c.totalReplyCount > 0)) "
             + "ORDER BY c.createdAt DESC")
     Page<Comment> findVisibleRootComments(
             @Param("section") String section,
@@ -59,7 +64,8 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
      */
     @Query("SELECT c FROM Comment c WHERE c.parentId = :parentId "
             + "AND (c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
-            + "OR (c.status = club.ttg.comment.model.CommentStatus.DELETED AND c.totalReplyCount > 0)) "
+            + "OR (c.status IN (club.ttg.comment.model.CommentStatus.DELETED, "
+            + "club.ttg.comment.model.CommentStatus.HIDDEN_BY_BAN) AND c.totalReplyCount > 0)) "
             + "ORDER BY c.createdAt ASC")
     List<Comment> findVisibleByParentId(@Param("parentId") UUID parentId);
 
@@ -127,8 +133,9 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
 
     /**
      * Пересчитывает {@code reply_count} (число прямых опубликованных ответов) у всех
-     * опубликованных и удалённых комментариев. Удалённые включены не случайно: надгробию
-     * счётчики нужны для собственной видимости и для «N ответов» в выдаче.
+     * комментариев, которые могут оказаться в выдаче: опубликованных и обоих надгробных
+     * статусов (DELETED, HIDDEN_BY_BAN). Надгробия включены не случайно: счётчики нужны им
+     * для собственной видимости и для «N ответов» в выдаче.
      * <p>
      * Массовое скрытие нельзя свести к дельтам, как это делается при удалении одного
      * комментария: комментарии забаненного автора могут быть вложены друг в друга, и вычитание
@@ -145,7 +152,7 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
                 FROM comment.comments p
                 LEFT JOIN comment.comments child
                        ON child.parent_id = p.id AND child.status = 'PUBLISHED'
-                WHERE p.status IN ('PUBLISHED', 'DELETED')
+                WHERE p.status IN ('PUBLISHED', 'DELETED', 'HIDDEN_BY_BAN')
                 GROUP BY p.id
             ) child_counts
             WHERE t.id = child_counts.parent_id
@@ -155,26 +162,27 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
 
     /**
      * Пересчитывает {@code total_reply_count} — число опубликованных потомков, достижимых
-     * по цепочке из PUBLISHED- и DELETED-узлов, — у всех опубликованных и удалённых комментариев.
+     * по цепочке из PUBLISHED- и надгробных узлов, — у всех опубликованных и надгробных
+     * комментариев.
      * <p>
-     * DELETED проницаем для рекурсии: удалённый узел остаётся в выдаче надгробием, и ветка
-     * под ним живёт, поэтому её нельзя выкидывать из счётчиков предков. Сами DELETED-узлы
-     * при этом не считаются (надгробие — не комментарий), но счётчик им ведётся: по
-     * {@code total_reply_count > 0} выборки решают, показывать ли надгробие. Любой другой
-     * статус (HIDDEN_BY_BAN, REJECTED, SPAM, PENDING_MODERATION) обрывает путь — ровно так же,
-     * как {@code adjustAncestorTotals} останавливается на первом таком предке.
+     * Надгробные статусы (DELETED, HIDDEN_BY_BAN) проницаемы для рекурсии: такой узел остаётся
+     * в выдаче надгробием, и ветка под ним живёт, поэтому её нельзя выкидывать из счётчиков
+     * предков. Сами надгробия при этом не считаются (надгробие — не комментарий), но счётчик им
+     * ведётся: по {@code total_reply_count > 0} выборки решают, показывать ли надгробие. Любой
+     * другой статус (REJECTED, SPAM, PENDING_MODERATION) обрывает путь — ровно так же, как
+     * {@code adjustAncestorTotals} останавливается на первом таком предке.
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
             WITH RECURSIVE subtree AS (
                 SELECT c.id AS root_id, c.id AS node_id, c.status AS node_status
                 FROM comment.comments c
-                WHERE c.status IN ('PUBLISHED', 'DELETED')
+                WHERE c.status IN ('PUBLISHED', 'DELETED', 'HIDDEN_BY_BAN')
                 UNION ALL
                 SELECT s.root_id, child.id, child.status
                 FROM subtree s
                 JOIN comment.comments child ON child.parent_id = s.node_id
-                WHERE child.status IN ('PUBLISHED', 'DELETED')
+                WHERE child.status IN ('PUBLISHED', 'DELETED', 'HIDDEN_BY_BAN')
             )
             UPDATE comment.comments t
             SET total_reply_count = sub.cnt
