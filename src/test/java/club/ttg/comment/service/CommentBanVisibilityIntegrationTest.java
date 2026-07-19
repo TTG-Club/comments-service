@@ -7,6 +7,7 @@ import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Проверяет смену статусов и следующий за ней пересчёт счётчиков на настоящем PostgreSQL:
@@ -170,9 +172,16 @@ class CommentBanVisibilityIntegrationTest
 
         commentService.hideCommentsByAuthor(bannedAuthorId);
 
-        // Ветка под скрытым узлом уходит из счётчиков корня целиком, без задвоения.
+        // Прямых опубликованных ответов у корня не осталось: replyA скрыт баном и считается
+        // теперь надгробием, а не ответом.
         assertThat(reload(root).getReplyCount()).isZero();
-        assertThat(reload(root).getTotalReplyCount()).isZero();
+        // А вот чужой replyC под скрытыми узлами жив и остаётся в числе потомков корня:
+        // надгробия проницаемы для счётчиков, бан одного автора не уносит чужую ветку.
+        assertThat(reload(root).getTotalReplyCount()).isEqualTo(1);
+        // Оба скрытых узла держат ветку видимой — по totalReplyCount > 0 они отдаются
+        // надгробиями, а не выпадают из выдачи вместе с replyC.
+        assertThat(reload(replyA).getTotalReplyCount()).isEqualTo(1);
+        assertThat(reload(replyB).getTotalReplyCount()).isEqualTo(1);
 
         commentService.restoreCommentsByAuthor(bannedAuthorId);
 
@@ -333,6 +342,90 @@ class CommentBanVisibilityIntegrationTest
         // Последний ответ удалён — показывать больше нечего, надгробие ушло из выдачи.
         assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20))
                 .getContent()).isEmpty();
+    }
+
+    /**
+     * Ради чего надгробие распространили на бан: комментарий заблокированного автора, под
+     * которым остались чужие ответы, не должен уносить их с собой. После блокировки он остаётся
+     * в выдаче замаскированным узлом, ветка под ним живёт, а разблокировка возвращает его
+     * целиком — в отличие от удаления, которое снимается только восстановлением узла.
+     */
+    @Test
+    void hiddenByBanCommentWithRepliesStaysVisibleAsTombstone()
+    {
+        final Comment root = save(comment(bannedAuthorId, null, CommentStatus.PUBLISHED, "от забаненного"));
+        save(comment(otherAuthorId, root.getId(), CommentStatus.PUBLISHED, "чужой полезный ответ"));
+
+        commentService.hideCommentsByAuthor(bannedAuthorId);
+        entityManager.clear();
+
+        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+                .singleElement()
+                .satisfies(tombstone -> {
+                    assertThat(tombstone.getId()).isEqualTo(root.getId());
+                    // Наружу — DELETED: то, что автора забанили, публичная выдача не сообщает.
+                    assertThat(tombstone.getStatus()).isEqualTo(CommentStatus.DELETED);
+                    assertThat(tombstone.getContent()).isNull();
+                    assertThat(tombstone.getAuthorId()).isNull();
+                    assertThat(tombstone.getAuthorName()).isNull();
+                });
+
+        // В базе статус прежний — иначе разблокировка не нашла бы, что возвращать.
+        assertThat(statusOf(root)).isEqualTo(CommentStatus.HIDDEN_BY_BAN);
+
+        // Ветка под надгробием живёт, и по прямой ссылке узел доступен: подъём по parentId
+        // от ответа к корню не обрывается.
+        assertThat(commentService.getReplies(root.getId()))
+                .singleElement()
+                .extracting(CommentResponse::getContent)
+                .isEqualTo("чужой полезный ответ");
+        assertThat(commentService.getComment(root.getId()).getContent()).isNull();
+
+        commentService.restoreCommentsByAuthor(bannedAuthorId);
+        entityManager.clear();
+
+        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+                .singleElement()
+                .extracting(CommentResponse::getContent)
+                .isEqualTo("от забаненного");
+    }
+
+    /**
+     * Обратная половина правила: без живых ответов скрывать нечего — комментарий забаненного
+     * уходит из выдачи совсем, а не оставляет за собой пустое надгробие.
+     */
+    @Test
+    void hiddenByBanCommentWithoutRepliesDisappearsFromFeed()
+    {
+        final Comment lonely = save(comment(bannedAuthorId, null, CommentStatus.PUBLISHED, "без ответов"));
+
+        commentService.hideCommentsByAuthor(bannedAuthorId);
+        entityManager.clear();
+
+        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+                .isEmpty();
+        assertThatThrownBy(() -> commentService.getComment(lonely.getId()))
+                .isInstanceOf(EntityNotFoundException.class);
+    }
+
+    /**
+     * Надгробие бана держится на живых ответах ровно так же, как надгробие удаления: когда
+     * удаляют последний ответ под ним, показывать больше нечего и оно уходит из выдачи.
+     */
+    @Test
+    void banTombstoneDisappearsWhenLastReplyIsDeleted()
+    {
+        final Comment root = save(comment(bannedAuthorId, null, CommentStatus.PUBLISHED, "от забаненного"));
+        final Comment reply = save(comment(otherAuthorId, root.getId(), CommentStatus.PUBLISHED, "чужой ответ"));
+
+        commentService.hideCommentsByAuthor(bannedAuthorId);
+        entityManager.clear();
+
+        commentService.deleteComment(reply.getId(), otherAuthorId, false);
+        entityManager.clear();
+
+        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+                .isEmpty();
     }
 
     private Comment save(final Comment comment)
