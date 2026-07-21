@@ -132,6 +132,25 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     int restoreHiddenByBanByAuthor(@Param("authorId") UUID authorId);
 
     /**
+     * Массово обновляет снимок имени автора во всех его комментариях — при смене
+     * пользователем отображаемого имени на сайте. Снимок кормит в выдаче и
+     * {@code authorName} автора, и {@code parentAuthorName} («в ответ {имя}») в его
+     * ответах, поэтому один UPDATE чинит имя везде сразу, включая старые комментарии.
+     * <p>
+     * Условие {@code <> :displayName} делает вызов идемпотентным и дешёвым при повторе:
+     * строки, уже несущие это имя, не переписываются, а {@code affected} считает только
+     * реально изменённые. Индекс {@code idx_comments_author_created_at} по {@code author_id}
+     * поддерживает выборку.
+     *
+     * @return число затронутых комментариев; 0, если менять было нечего
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Comment c SET c.authorNameSnapshot = :displayName "
+            + "WHERE c.authorId = :authorId "
+            + "AND c.authorNameSnapshot <> :displayName")
+    int renameAuthor(@Param("authorId") UUID authorId, @Param("displayName") String displayName);
+
+    /**
      * Пересчитывает {@code reply_count} (число прямых опубликованных ответов) у всех
      * комментариев, которые могут оказаться в выдаче: опубликованных и обоих надгробных
      * статусов (DELETED, HIDDEN_BY_BAN). Надгробия включены не случайно: счётчики нужны им
