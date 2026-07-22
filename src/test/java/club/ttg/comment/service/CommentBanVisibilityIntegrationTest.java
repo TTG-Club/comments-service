@@ -5,6 +5,7 @@ import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
@@ -316,7 +317,7 @@ class CommentBanVisibilityIntegrationTest
         entityManager.clear();
 
         final Page<CommentResponse> roots =
-                commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20));
+                commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20));
 
         // Корень остался в выдаче надгробием: статус виден, содержимое — нет.
         assertThat(roots.getContent()).singleElement().satisfies(tombstone -> {
@@ -340,7 +341,7 @@ class CommentBanVisibilityIntegrationTest
         entityManager.clear();
 
         // Последний ответ удалён — показывать больше нечего, надгробие ушло из выдачи.
-        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20))
+        assertThat(commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20))
                 .getContent()).isEmpty();
     }
 
@@ -359,7 +360,7 @@ class CommentBanVisibilityIntegrationTest
         commentService.hideCommentsByAuthor(bannedAuthorId);
         entityManager.clear();
 
-        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+        assertThat(commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20)).getContent())
                 .singleElement()
                 .satisfies(tombstone -> {
                     assertThat(tombstone.getId()).isEqualTo(root.getId());
@@ -384,7 +385,7 @@ class CommentBanVisibilityIntegrationTest
         commentService.restoreCommentsByAuthor(bannedAuthorId);
         entityManager.clear();
 
-        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+        assertThat(commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20)).getContent())
                 .singleElement()
                 .extracting(CommentResponse::getContent)
                 .isEqualTo("от забаненного");
@@ -402,7 +403,7 @@ class CommentBanVisibilityIntegrationTest
         commentService.hideCommentsByAuthor(bannedAuthorId);
         entityManager.clear();
 
-        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+        assertThat(commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20)).getContent())
                 .isEmpty();
         assertThatThrownBy(() -> commentService.getComment(lonely.getId()))
                 .isInstanceOf(EntityNotFoundException.class);
@@ -424,7 +425,7 @@ class CommentBanVisibilityIntegrationTest
         commentService.deleteComment(reply.getId(), otherAuthorId, false);
         entityManager.clear();
 
-        assertThat(commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent())
+        assertThat(commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20)).getContent())
                 .isEmpty();
     }
 

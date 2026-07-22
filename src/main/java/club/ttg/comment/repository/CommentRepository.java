@@ -2,6 +2,7 @@ package club.ttg.comment.repository;
 
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.model.SourcePlatform;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -47,12 +48,14 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
      * из выдачи и чужие ответы под его комментариями.
      */
     @Query("SELECT c FROM Comment c "
-            + "WHERE c.section = :section AND c.url = :url AND c.parentId IS NULL "
+            + "WHERE c.sourcePlatform = :sourcePlatform AND c.section = :section "
+            + "AND c.url = :url AND c.parentId IS NULL "
             + "AND (c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
             + "OR (c.status IN (club.ttg.comment.model.CommentStatus.DELETED, "
             + "club.ttg.comment.model.CommentStatus.HIDDEN_BY_BAN) AND c.totalReplyCount > 0)) "
             + "ORDER BY c.createdAt DESC")
     Page<Comment> findVisibleRootComments(
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
             @Param("section") String section,
             @Param("url") String url,
             Pageable pageable
@@ -70,13 +73,15 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     List<Comment> findVisibleByParentId(@Param("parentId") UUID parentId);
 
     // Вторичная сортировка по id даёт детерминированного «последнего» при равном created_at.
-    Optional<Comment> findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+    Optional<Comment> findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+            SourcePlatform sourcePlatform,
             String section,
             String url,
             CommentStatus status
     );
 
-    long countBySectionAndUrlAndStatus(
+    long countBySourcePlatformAndSectionAndUrlAndStatus(
+            SourcePlatform sourcePlatform,
             String section,
             String url,
             CommentStatus status

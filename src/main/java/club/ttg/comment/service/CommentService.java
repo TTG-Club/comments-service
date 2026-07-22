@@ -9,6 +9,7 @@ import club.ttg.comment.mapper.CommentMapper;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentComplaint;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentComplaintRepository;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -42,12 +43,14 @@ public class CommentService
      */
     @Transactional(readOnly = true)
     public Page<CommentResponse> getRootComments(
+            final SourcePlatform sourcePlatform,
             final String section,
             final String url,
             final Pageable pageable
     )
     {
         return commentRepository.findVisibleRootComments(
+                normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
                 normalize(url),
                 pageable
@@ -163,11 +166,13 @@ public class CommentService
 
     @Transactional(readOnly = true)
     public long getCommentCount(
+            final SourcePlatform sourcePlatform,
             final String section,
             final String url
     )
     {
-        return commentRepository.countBySectionAndUrlAndStatus(
+        return commentRepository.countBySourcePlatformAndSectionAndUrlAndStatus(
+                normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
                 normalize(url),
                 CommentStatus.PUBLISHED
@@ -192,11 +197,13 @@ public class CommentService
      */
     @Transactional(readOnly = true)
     public Optional<CommentResponse> getLatestComment(
+            final SourcePlatform sourcePlatform,
             final String section,
             final String url
     )
     {
-        return commentRepository.findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+        return commentRepository.findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+                normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
                 normalize(url),
                 CommentStatus.PUBLISHED
@@ -331,6 +338,7 @@ public class CommentService
         commentRateLimitService.ensureCanPost(authorId, canModerate);
 
         final Comment reply = commentMapper.toReply(
+                parent.getSourcePlatform(),
                 parent.getSection(),
                 parent.getUrl(),
                 parentId,
@@ -661,6 +669,7 @@ public class CommentService
     private CreateCommentRequest normalizeRequest(final CreateCommentRequest request)
     {
         final CreateCommentRequest normalizedRequest = new CreateCommentRequest();
+        normalizedRequest.setSourcePlatform(normalizeSourcePlatform(request.getSourcePlatform()));
         normalizedRequest.setSection(normalize(request.getSection()));
         normalizedRequest.setUrl(normalize(request.getUrl()));
         normalizedRequest.setContent(normalizeContent(request.getContent()));
@@ -670,6 +679,17 @@ public class CommentService
     private String normalize(final String value)
     {
         return value == null ? null : value.trim().toLowerCase();
+    }
+
+    /**
+     * Подставляет платформу по умолчанию. Отсутствие значения — не ошибка, а запрос от фронта,
+     * который поле ещё не присылает: до конца выката такие запросы должны попадать в обсуждения
+     * сайта 2024, а не заводить отдельный тред с пустым ключом. Опечатку подставить нельзя —
+     * неизвестное значение Spring отбивает на входе, ещё до сервиса.
+     */
+    private SourcePlatform normalizeSourcePlatform(final SourcePlatform value)
+    {
+        return value == null ? Comment.DEFAULT_SOURCE_PLATFORM : value;
     }
 
     private String normalizeContent(final String value)

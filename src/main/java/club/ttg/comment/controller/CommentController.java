@@ -3,6 +3,7 @@ package club.ttg.comment.controller;
 import club.ttg.comment.dto.request.CreateCommentRequest;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.service.CommentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -39,12 +40,19 @@ import java.util.UUID;
 @Tag(name = "Comments", description = "Управление комментариями к страницам")
 public class CommentController
 {
+    /**
+     * Общее описание параметра для Swagger: платформа-источник необязательна, чтобы фронт,
+     * ещё не знающий про поле, продолжал читать обсуждения сайта 2024 во время выката.
+     */
+    private static final String SOURCE_PLATFORM_PARAM_DESCRIPTION =
+            "Платформа-источник обсуждения. Необязательна: без неё берётся SITE_5E24.";
+
     private final CommentService commentService;
 
     @GetMapping
     @Operation(
             summary = "Список корневых комментариев",
-            description = "Возвращает корневые комментарии страницы (пара section + url) постранично: "
+            description = "Возвращает корневые комментарии страницы (тройка sourcePlatform + section + url) постранично: "
                     + "опубликованные, а также надгробия — удалённые комментарии, под которыми остались "
                     + "опубликованные ответы. Надгробие приходит со status = DELETED и без текста и автора "
                     + "(content/authorId/authorName = null): само сообщение удалено, но ветка ответов "
@@ -52,6 +60,8 @@ public class CommentController
     )
     @ApiResponse(responseCode = "200", description = "Страница комментариев")
     public Page<CommentResponse> getRootComments(
+            @Parameter(description = SOURCE_PLATFORM_PARAM_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
             @Parameter(description = "Раздел страницы", example = "blog", required = true)
             @RequestParam final String section,
             @Parameter(description = "URL страницы", example = "/posts/hello-world", required = true)
@@ -60,7 +70,7 @@ public class CommentController
             @PageableDefault(size = 20) final Pageable pageable
     )
     {
-        return commentService.getRootComments(section, url, pageable);
+        return commentService.getRootComments(sourcePlatform, section, url, pageable);
     }
 
     @GetMapping("/moderation")
@@ -175,17 +185,19 @@ public class CommentController
     @GetMapping("/count")
     @Operation(
             summary = "Число комментариев страницы",
-            description = "Возвращает количество опубликованных комментариев для пары section + url."
+            description = "Возвращает количество опубликованных комментариев для тройки sourcePlatform + section + url."
     )
     @ApiResponse(responseCode = "200", description = "Количество комментариев")
     public ResponseEntity<Long> getCommentCount(
+            @Parameter(description = SOURCE_PLATFORM_PARAM_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
             @Parameter(description = "Раздел страницы", example = "blog", required = true)
             @RequestParam final String section,
             @Parameter(description = "URL страницы", example = "/posts/hello-world", required = true)
             @RequestParam final String url
     )
     {
-        return ResponseEntity.ok(commentService.getCommentCount(section, url));
+        return ResponseEntity.ok(commentService.getCommentCount(sourcePlatform, section, url));
     }
 
     @GetMapping("/my/count")
@@ -220,13 +232,15 @@ public class CommentController
             @ApiResponse(responseCode = "204", description = "На странице ещё нет комментариев", content = @Content)
     })
     public ResponseEntity<CommentResponse> getLatestComment(
+            @Parameter(description = SOURCE_PLATFORM_PARAM_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
             @Parameter(description = "Раздел страницы", example = "blog", required = true)
             @RequestParam final String section,
             @Parameter(description = "URL страницы", example = "/posts/hello-world", required = true)
             @RequestParam final String url
     )
     {
-        return commentService.getLatestComment(section, url)
+        return commentService.getLatestComment(sourcePlatform, section, url)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.noContent().build());
     }

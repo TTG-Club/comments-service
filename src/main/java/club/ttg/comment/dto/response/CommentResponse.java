@@ -1,6 +1,7 @@
 package club.ttg.comment.dto.response;
 
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.model.SourcePlatform;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
 import lombok.Setter;
@@ -19,6 +20,10 @@ public class CommentResponse
 {
     @Schema(description = "Идентификатор комментария")
     private UUID id;
+
+    @Schema(description = "Платформа-источник обсуждения — по ней модерация понимает, на каком "
+            + "домене открывать страницу из url", example = "SITE_5E24")
+    private SourcePlatform sourcePlatform;
 
     @Schema(description = "Раздел страницы", example = "blog")
     private String section;
