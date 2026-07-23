@@ -28,6 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -735,28 +736,28 @@ class CommentServiceTest
         reply.setAuthorNameSnapshot("отвечающий");
 
         when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
-        when(commentRepository.findAll(any(Pageable.class)))
+        when(commentRepository.findForModeration(any(), any(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(parent, reply)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(null, PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
         assertThat(responseFor(page, parent.getId()).getParentAuthorName()).isNull();
     }
 
     /**
-     * Без authorId ручка модерации ведёт себя как раньше — общая лента через findAll. Это
-     * обратная совместимость: на ней держится существующая страница модерации.
+     * Без параметров оба фильтра — null, и единый запрос модерации возвращает общую ленту
+     * по всем платформам и авторам. На этом держится существующая страница модерации.
      */
     @Test
-    void moderationListWithoutAuthorGoesThroughUnfilteredQuery()
+    void moderationListWithoutFiltersPassesBothNulls()
     {
-        when(commentRepository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+        when(commentRepository.findForModeration(any(), any(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
 
-        commentService.getAllComments(null, PageRequest.of(0, 20));
+        commentService.getAllComments(null, null, PageRequest.of(0, 20));
 
-        verify(commentRepository).findAll(any(Pageable.class));
-        verify(commentRepository, never()).findByAuthorId(any(UUID.class), any(Pageable.class));
+        verify(commentRepository).findForModeration(isNull(), isNull(), any(Pageable.class));
     }
 
     @Test
@@ -765,15 +766,24 @@ class CommentServiceTest
         final UUID authorId = UUID.randomUUID();
         final Comment own = authoredBy(authorId);
 
-        when(commentRepository.findByAuthorId(eq(authorId), any(Pageable.class)))
+        when(commentRepository.findForModeration(isNull(), eq(authorId), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(own)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(authorId, PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, authorId, PageRequest.of(0, 20));
 
         assertThat(page.getContent()).singleElement()
                 .extracting(CommentResponse::getAuthorId).isEqualTo(authorId);
-        // Общая лента при заданном фильтре не запрашивается.
-        verify(commentRepository, never()).findAll(any(Pageable.class));
+    }
+
+    @Test
+    void moderationListWithPlatformFiltersByThatPlatform()
+    {
+        when(commentRepository.findForModeration(eq(SourcePlatform.SITE_5E14), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+
+        commentService.getAllComments(SourcePlatform.SITE_5E14, null, PageRequest.of(0, 20));
+
+        verify(commentRepository).findForModeration(eq(SourcePlatform.SITE_5E14), isNull(), any(Pageable.class));
     }
 
     /**
@@ -795,10 +805,10 @@ class CommentServiceTest
         final Comment hidden = authoredBy(authorId);
         hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
 
-        when(commentRepository.findByAuthorId(eq(authorId), any(Pageable.class)))
+        when(commentRepository.findForModeration(isNull(), eq(authorId), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(live, deleted, hidden)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(authorId, PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, authorId, PageRequest.of(0, 20));
 
         assertThat(page.getContent()).extracting(CommentResponse::getStatus)
                 .containsExactlyInAnyOrder(
@@ -825,10 +835,10 @@ class CommentServiceTest
         deleted.setContent("удалённый текст");
         deleted.markAsDeleted();
 
-        when(commentRepository.findAll(any(Pageable.class)))
+        when(commentRepository.findForModeration(any(), any(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(deleted)));
 
-        final Page<CommentResponse> page = commentService.getAllComments(null, PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getAllComments(null, null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, deleted.getId()).getContent()).isEqualTo("удалённый текст");
         assertThat(responseFor(page, deleted.getId()).getStatus()).isEqualTo(CommentStatus.DELETED);
@@ -845,10 +855,10 @@ class CommentServiceTest
         reply.setDislikeCount(2);
 
         when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
-        when(commentRepository.findByDislikeCountGreaterThan(eq(0), any(Pageable.class)))
+        when(commentRepository.findDislikedForModeration(any(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(reply)));
 
-        final Page<CommentResponse> page = commentService.getDislikedComments(PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getDislikedComments(null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
     }

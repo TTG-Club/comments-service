@@ -47,6 +47,13 @@ public class CommentController
     private static final String SOURCE_PLATFORM_PARAM_DESCRIPTION =
             "Платформа-источник обсуждения. Необязательна: без неё берётся SITE_5E24.";
 
+    /**
+     * Описание фильтра платформы в модерационных лентах: там пустое значение не подставляет
+     * дефолт, а снимает фильтр — возвращаются комментарии со всех платформ.
+     */
+    private static final String SOURCE_PLATFORM_FILTER_DESCRIPTION =
+            "Фильтр по платформе-источнику. Без параметра — все платформы.";
+
     private final CommentService commentService;
 
     @GetMapping
@@ -91,6 +98,8 @@ public class CommentController
             @ApiResponse(responseCode = "403", description = "Недостаточно прав", content = @Content)
     })
     public Page<CommentResponse> getAllComments(
+            @Parameter(description = SOURCE_PLATFORM_FILTER_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
             @Parameter(description = "ID автора — тот же UUID, что и клейм sub в JWT. "
                     + "Без параметра возвращается вся лента модерации.",
                     example = "6b1f8f6e-6f2a-4a5e-9c4d-2f1b3c4d5e6f")
@@ -99,7 +108,7 @@ public class CommentController
             @PageableDefault(size = 20) final Pageable pageable
     )
     {
-        return commentService.getAllComments(authorId, pageable);
+        return commentService.getAllComments(sourcePlatform, authorId, pageable);
     }
 
     @GetMapping("/moderation/disliked")
@@ -116,11 +125,13 @@ public class CommentController
             @ApiResponse(responseCode = "403", description = "Недостаточно прав", content = @Content)
     })
     public Page<CommentResponse> getDislikedComments(
+            @Parameter(description = SOURCE_PLATFORM_FILTER_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
             @Parameter(description = "Параметры пагинации (page, size)")
             @PageableDefault(size = 20) final Pageable pageable
     )
     {
-        return commentService.getDislikedComments(pageable);
+        return commentService.getDislikedComments(sourcePlatform, pageable);
     }
 
     @PostMapping("/{commentId}/dislike")

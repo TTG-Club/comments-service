@@ -92,18 +92,35 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
             CommentStatus status
     );
 
-    Page<Comment> findByDislikeCountGreaterThan(
-            int dislikeCount,
+    /**
+     * Лента модерации: все комментарии независимо от статуса. Оба фильтра опциональны и
+     * независимы — {@code null} снимает соответствующее условие:
+     * <ul>
+     *   <li>{@code authorId} сужает до одного автора (карточка пользователя в админке);</li>
+     *   <li>{@code sourcePlatform} сужает до одной платформы (лента общая на все сайты,
+     *       модератор отсекает нужный).</li>
+     * </ul>
+     * Фильтра по статусу нет намеренно: администратору нужно видеть и DELETED, и HIDDEN_BY_BAN.
+     * Сортировку задаёт {@code Pageable}.
+     */
+    @Query("SELECT c FROM Comment c "
+            + "WHERE (:authorId IS NULL OR c.authorId = :authorId) "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform)")
+    Page<Comment> findForModeration(
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            @Param("authorId") UUID authorId,
             Pageable pageable
     );
 
     /**
-     * Все комментарии автора для модераторской выдачи — намеренно без фильтра по статусу,
-     * как и {@code findAll} в общей ленте модерации: администратору в карточке пользователя
-     * нужно видеть и DELETED, и HIDDEN_BY_BAN, а не только живые.
+     * Лента жалоб: комментарии хотя бы с одной жалобой. {@code sourcePlatform} опционален —
+     * {@code null} возвращает жалобы со всех платформ. Сортировку задаёт {@code Pageable}.
      */
-    Page<Comment> findByAuthorId(
-            UUID authorId,
+    @Query("SELECT c FROM Comment c "
+            + "WHERE c.dislikeCount > 0 "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform)")
+    Page<Comment> findDislikedForModeration(
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
             Pageable pageable
     );
 
