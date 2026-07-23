@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
@@ -202,28 +203,51 @@ class CommentControllerSecurityTest
     @Test
     void moderatorReadsModeration() throws Exception
     {
-        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getAllComments(any(), any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
                 .andExpect(status().isOk());
 
-        // Без параметра в сервис уходит null — общая лента, как и до появления фильтра.
-        verify(commentService).getAllComments(eq(null), any(Pageable.class));
+        // Без параметров оба фильтра — null: общая лента по всем платформам и авторам.
+        verify(commentService).getAllComments(isNull(), isNull(), any(Pageable.class));
     }
 
     @Test
     void adminFiltersModerationByAuthor() throws Exception
     {
         final UUID authorId = UUID.randomUUID();
-        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getAllComments(any(), any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation")
                         .param("authorId", authorId.toString())
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
                 .andExpect(status().isOk());
 
-        verify(commentService).getAllComments(eq(authorId), any(Pageable.class));
+        verify(commentService).getAllComments(isNull(), eq(authorId), any(Pageable.class));
+    }
+
+    @Test
+    void adminFiltersModerationByPlatform() throws Exception
+    {
+        given(commentService.getAllComments(any(), any(), any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .param("sourcePlatform", "SITE_5E14")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isOk());
+
+        verify(commentService).getAllComments(eq(SourcePlatform.SITE_5E14), isNull(), any(Pageable.class));
+    }
+
+    @Test
+    void unknownPlatformFilterIsRejected() throws Exception
+    {
+        // Неизвестное значение enum отбивается разбором параметра (400), а не доходит до сервиса.
+        mockMvc.perform(get("/api/v1/comments/moderation")
+                        .param("sourcePlatform", "SITE_MARS")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -248,7 +272,7 @@ class CommentControllerSecurityTest
     @Test
     void moderatorReadsDislikedComments() throws Exception
     {
-        given(commentService.getDislikedComments(any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getDislikedComments(any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation/disliked")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("MODERATOR"))))
@@ -258,7 +282,7 @@ class CommentControllerSecurityTest
     @Test
     void adminReadsModeration() throws Exception
     {
-        given(commentService.getAllComments(any(), any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getAllComments(any(), any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))
@@ -269,7 +293,7 @@ class CommentControllerSecurityTest
     void adminReadsDislikedComments() throws Exception
     {
         // Часть админов сайта имеет только роль ADMIN без MODERATOR, а админка ходит сюда.
-        given(commentService.getDislikedComments(any(Pageable.class))).willReturn(Page.empty());
+        given(commentService.getDislikedComments(any(), any(Pageable.class))).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments/moderation/disliked")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("ADMIN"))))

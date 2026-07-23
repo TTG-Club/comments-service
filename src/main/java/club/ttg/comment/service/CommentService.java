@@ -58,16 +58,17 @@ public class CommentService
     }
 
     /**
-     * Лента модерации: все комментарии независимо от статуса, от новых к старым.
-     * {@code authorId == null} — вся лента (поведение до появления фильтра, на нём держится
-     * страница модерации); иначе только комментарии этого автора, для карточки пользователя
-     * в админке.
+     * Лента модерации: все комментарии независимо от статуса, от новых к старым. Оба фильтра
+     * опциональны и независимы — {@code null} снимает условие: {@code authorId} сужает до
+     * автора (карточка пользователя в админке), {@code sourcePlatform} — до платформы (лента
+     * общая на все сайты сервиса).
      * <p>
-     * Фильтра по статусу нет ни в одной из веток сознательно: и удалённые, и скрытые баном
-     * должны быть видны модератору — группировку по статусам делает фронт.
+     * Фильтра по статусу нет сознательно: и удалённые, и скрытые баном должны быть видны
+     * модератору — группировку по статусам делает фронт.
      */
     @Transactional(readOnly = true)
     public Page<CommentResponse> getAllComments(
+            final SourcePlatform sourcePlatform,
             final UUID authorId,
             final Pageable pageable
     )
@@ -78,15 +79,19 @@ public class CommentService
                 Sort.by(Sort.Direction.DESC, "createdAt")
         );
 
-        final Page<Comment> comments = authorId == null
-                ? commentRepository.findAll(sortedByNewest)
-                : commentRepository.findByAuthorId(authorId, sortedByNewest);
-
-        return comments.map(this::buildResponse);
+        return commentRepository.findForModeration(sourcePlatform, authorId, sortedByNewest)
+                .map(this::buildResponse);
     }
 
+    /**
+     * Лента жалоб. {@code sourcePlatform} опционален — {@code null} возвращает жалобы со всех
+     * платформ.
+     */
     @Transactional(readOnly = true)
-    public Page<CommentResponse> getDislikedComments(final Pageable pageable)
+    public Page<CommentResponse> getDislikedComments(
+            final SourcePlatform sourcePlatform,
+            final Pageable pageable
+    )
     {
         final Pageable sortedByDislikes = PageRequest.of(
                 pageable.getPageNumber(),
@@ -94,7 +99,7 @@ public class CommentService
                 Sort.by(Sort.Direction.DESC, "dislikeCount")
         );
 
-        return commentRepository.findByDislikeCountGreaterThan(0, sortedByDislikes)
+        return commentRepository.findDislikedForModeration(sourcePlatform, sortedByDislikes)
                 .map(this::buildResponse);
     }
 
