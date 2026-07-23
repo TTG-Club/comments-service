@@ -163,14 +163,25 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
      * строки, уже несущие это имя, не переписываются, а {@code affected} считает только
      * реально изменённые. Индекс {@code idx_comments_author_created_at} по {@code author_id}
      * поддерживает выборку.
+     * <p>
+     * {@code sourcePlatform} ограничивает переименование одной платформой и опционален
+     * ({@code null} — все платформы автора). Скоуп нужен потому, что {@code authorId} общий
+     * у пользователя на всех сайтах (единый auth-service): без него имя, заданное на одном
+     * сайте, переписало бы комментарии этого автора и на других. Отображаемое имя у сайтов
+     * своё, поэтому каждый правит только свои комментарии.
      *
      * @return число затронутых комментариев; 0, если менять было нечего
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE Comment c SET c.authorNameSnapshot = :displayName "
             + "WHERE c.authorId = :authorId "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform) "
             + "AND c.authorNameSnapshot <> :displayName")
-    int renameAuthor(@Param("authorId") UUID authorId, @Param("displayName") String displayName);
+    int renameAuthor(
+            @Param("authorId") UUID authorId,
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            @Param("displayName") String displayName
+    );
 
     /**
      * Пересчитывает {@code reply_count} (число прямых опубликованных ответов) у всех
