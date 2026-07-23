@@ -8,6 +8,7 @@ import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentComplaintRepository;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
@@ -29,6 +30,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -234,10 +236,11 @@ class CommentServiceTest
         tombstone.setTotalReplyCount(1);
         tombstone.markAsDeleted();
 
-        when(commentRepository.findVisibleRootComments(eq("blog"), eq("/posts/x"), any(Pageable.class)))
+        when(commentRepository.findVisibleRootComments(
+                eq(SourcePlatform.SITE_5E24), eq("blog"), eq("/posts/x"), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(live, tombstone)));
 
-        final Page<CommentResponse> page = commentService.getRootComments("Blog", " /posts/X ", PageRequest.of(0, 20));
+        final Page<CommentResponse> page = commentService.getRootComments(null, "Blog", " /posts/X ", PageRequest.of(0, 20));
 
         assertThat(responseFor(page, live.getId()).getContent()).isEqualTo("живой текст");
         assertThat(responseFor(page, tombstone.getId()).getContent()).isNull();
@@ -272,11 +275,12 @@ class CommentServiceTest
         hidden.setTotalReplyCount(1);
         hidden.setStatus(CommentStatus.HIDDEN_BY_BAN);
 
-        when(commentRepository.findVisibleRootComments(eq("blog"), eq("/posts/x"), any(Pageable.class)))
+        when(commentRepository.findVisibleRootComments(
+                eq(SourcePlatform.SITE_5E24), eq("blog"), eq("/posts/x"), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(hidden)));
 
         final CommentResponse masked =
-                commentService.getRootComments("blog", "/posts/x", PageRequest.of(0, 20)).getContent().get(0);
+                commentService.getRootComments(SourcePlatform.SITE_5E24, "blog", "/posts/x", PageRequest.of(0, 20)).getContent().get(0);
 
         assertThat(masked.getStatus()).isEqualTo(CommentStatus.DELETED);
         assertThat(masked.getContent()).isNull();
@@ -478,12 +482,12 @@ class CommentServiceTest
         latestReply.setAuthorNameSnapshot("отвечающий");
         latestReply.setTotalReplyCount(0);
 
-        when(commentRepository.findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
-                "blog", "/posts/x", CommentStatus.PUBLISHED))
+        when(commentRepository.findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+                SourcePlatform.SITE_5E24, "blog", "/posts/x", CommentStatus.PUBLISHED))
                 .thenReturn(Optional.of(latestReply));
         when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
 
-        final Optional<CommentResponse> result = commentService.getLatestComment("Blog", " /posts/X ");
+        final Optional<CommentResponse> result = commentService.getLatestComment(null, "Blog", " /posts/X ");
 
         assertThat(result).isPresent();
         assertThat(result.get().getAuthorName()).isEqualTo("отвечающий");
@@ -496,24 +500,73 @@ class CommentServiceTest
         final Comment latestRoot = published(UUID.randomUUID(), null);
         latestRoot.setAuthorNameSnapshot("автор");
 
-        when(commentRepository.findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
-                "blog", "/x", CommentStatus.PUBLISHED))
+        when(commentRepository.findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+                SourcePlatform.SITE_5E24, "blog", "/x", CommentStatus.PUBLISHED))
                 .thenReturn(Optional.of(latestRoot));
 
-        final Optional<CommentResponse> result = commentService.getLatestComment("blog", "/x");
+        final Optional<CommentResponse> result = commentService.getLatestComment(SourcePlatform.SITE_5E24, "blog", "/x");
 
         assertThat(result).isPresent();
         assertThat(result.get().getParentAuthorName()).isNull();
     }
 
+    /**
+     * Фронт, не знающий про sourcePlatform, продолжает читать обсуждения сайта 2024:
+     * отсутствие значения — это запрос старой версии, а не отдельный тред с пустым ключом.
+     * На этом держится выкат: сервис уезжает раньше фронтов, и текущий прод не должен
+     * заметить миграцию. Значение обязано совпадать с бэкфиллом миграции 008.
+     */
+    @Test
+    void readsFallBackToDefaultPlatformWhenNotProvided()
+    {
+        commentService.getCommentCount(null, "blog", "/x");
+
+        verify(commentRepository)
+                .countBySourcePlatformAndSectionAndUrlAndStatus(
+                        Comment.DEFAULT_SOURCE_PLATFORM, "blog", "/x", CommentStatus.PUBLISHED);
+    }
+
+    /** Переданная платформа уходит в запрос как есть — дефолт её не перебивает. */
+    @Test
+    void readsUseProvidedPlatform()
+    {
+        commentService.getCommentCount(SourcePlatform.SITE_5E14, "blog", "/x");
+
+        verify(commentRepository)
+                .countBySourcePlatformAndSectionAndUrlAndStatus(
+                        SourcePlatform.SITE_5E14, "blog", "/x", CommentStatus.PUBLISHED);
+    }
+
+    /** Ответ наследует платформу родителя: тред не может разъехаться внутри одной ветки. */
+    @Test
+    void replyInheritsSourcePlatformFromParent()
+    {
+        final Comment parent = published(UUID.randomUUID(), null);
+        parent.setSourcePlatform(SourcePlatform.SITE_5E14);
+        parent.setSection("spells");
+        parent.setUrl("/spells/acid_splash");
+
+        when(commentRepository.findById(parent.getId())).thenReturn(Optional.of(parent));
+        when(commentRepository.save(any(Comment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        final CreateCommentRequest request = new CreateCommentRequest();
+        request.setContent("ответ");
+
+        final CommentResponse reply =
+                commentService.createReply(parent.getId(), request, UUID.randomUUID(), "автор", false);
+
+        assertThat(reply.getSourcePlatform()).isEqualTo(SourcePlatform.SITE_5E14);
+        assertThat(reply.getSection()).isEqualTo("spells");
+    }
+
     @Test
     void getLatestReturnsEmptyWhenPageHasNoComments()
     {
-        when(commentRepository.findFirstBySectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
-                any(), any(), any()))
+        when(commentRepository.findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
+                any(), any(), any(), any()))
                 .thenReturn(Optional.empty());
 
-        assertThat(commentService.getLatestComment("blog", "/x")).isEmpty();
+        assertThat(commentService.getLatestComment(SourcePlatform.SITE_5E24, "blog", "/x")).isEmpty();
     }
 
     @Test

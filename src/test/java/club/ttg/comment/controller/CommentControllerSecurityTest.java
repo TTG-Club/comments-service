@@ -2,6 +2,7 @@ package club.ttg.comment.controller;
 
 import club.ttg.comment.config.SecurityConfig;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.exception.CommentAccessDeniedException;
 import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.exception.GlobalExceptionHandler;
@@ -32,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -63,8 +65,13 @@ class CommentControllerSecurityTest
     @Test
     void guestReadsRootComments() throws Exception
     {
-        given(commentService.getRootComments(anyString(), anyString(), any(Pageable.class)))
-                .willReturn(Page.empty());
+        // Платформа nullable: запрос её не передаёт, как ещё не обновлённый фронт.
+        given(commentService.getRootComments(
+                nullable(SourcePlatform.class),
+                anyString(),
+                anyString(),
+                any(Pageable.class)
+        )).willReturn(Page.empty());
 
         mockMvc.perform(get("/api/v1/comments")
                         .param("section", "spells")
@@ -75,7 +82,8 @@ class CommentControllerSecurityTest
     @Test
     void guestReadsCommentCount() throws Exception
     {
-        given(commentService.getCommentCount(anyString(), anyString())).willReturn(3L);
+        given(commentService.getCommentCount(nullable(SourcePlatform.class), anyString(), anyString()))
+                .willReturn(3L);
 
         mockMvc.perform(get("/api/v1/comments/count")
                         .param("section", "spells")
@@ -95,7 +103,7 @@ class CommentControllerSecurityTest
     @Test
     void guestReadsLatestComment() throws Exception
     {
-        given(commentService.getLatestComment(anyString(), anyString()))
+        given(commentService.getLatestComment(nullable(SourcePlatform.class), anyString(), anyString()))
                 .willReturn(Optional.of(new CommentResponse()));
 
         mockMvc.perform(get("/api/v1/comments/latest")
@@ -107,7 +115,8 @@ class CommentControllerSecurityTest
     @Test
     void latestReturnsNoContentWhenPageEmpty() throws Exception
     {
-        given(commentService.getLatestComment(anyString(), anyString())).willReturn(Optional.empty());
+        given(commentService.getLatestComment(nullable(SourcePlatform.class), anyString(), anyString()))
+                .willReturn(Optional.empty());
 
         mockMvc.perform(get("/api/v1/comments/latest")
                         .param("section", "spells")

@@ -26,10 +26,30 @@ import java.util.UUID;
 @Table(name = "comments")
 public class Comment
 {
+    /**
+     * Платформа-источник по умолчанию. До появления поля в сервис писал только сайт 2024
+     * (core-app), поэтому им же заполнены существующие строки — и то же значение
+     * подставляется запросам без поля.
+     * <p>
+     * Совпадение обязательно: уже задеплоенный фронт поле не присылает, и если бы фолбэк
+     * разошёлся с бэкфиллом миграции, он спрашивал бы один ключ, а строки лежали бы под
+     * другим — обсуждения на проде опустели бы сразу после выката сервиса.
+     */
+    public static final SourcePlatform DEFAULT_SOURCE_PLATFORM = SourcePlatform.SITE_5E24;
+
     @Id
     @UuidGenerator
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
+
+    /**
+     * Платформа, на которой живёт обсуждение. Вместе с section и url образует ключ треда:
+     * разделы у сайтов совпадают (spells, bestiary), а слаги сущностей приходят из разных
+     * бэкендов — без этого поля принадлежность треда решалась бы совпадением слагов.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "source_platform", nullable = false, length = 50)
+    private SourcePlatform sourcePlatform;
 
     @Column(name = "section", nullable = false, length = 100)
     private String section;

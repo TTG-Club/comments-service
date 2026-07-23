@@ -3,6 +3,7 @@ package club.ttg.comment.mapper;
 import club.ttg.comment.dto.request.CreateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
 import club.ttg.comment.model.Comment;
+import club.ttg.comment.model.SourcePlatform;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 
@@ -41,6 +42,7 @@ public interface CommentMapper
     @Mapping(target = "createdAt", ignore = true)
     @Mapping(target = "updatedAt", ignore = true)
     Comment toReply(
+            SourcePlatform sourcePlatform,
             String section,
             String url,
             UUID parentId,

@@ -1,0 +1,82 @@
+databaseChangeLog:
+  - changeSet:
+      id: add-comment-source-platform
+      author: ttg
+      comment: >-
+        Платформа-источник обсуждения. До сих пор ключом треда была пара
+        section + url, и этого хватало, пока сервис обслуживал один фронт.
+        Со вторым сайтом пары стало недостаточно: разделы у сайтов совпадают
+        (spells, bestiary), а слаги сущностей приходят из разных бэкендов, и
+        обсуждения то склеивались у случайно совпавших слагов, то расходились
+        у разошедшихся. Тройка source_platform + section + url делает
+        принадлежность треда явной.
+        Заодно поле нужно модерации: ссылка «Открыть» строится от url, и без
+        платформы непонятно, на каком домене эта страница живёт.
+        Имя колонки и набор значений повторяют сервис баг-репортов
+        (SITE_5E24, SITE_5E14, VTTG) — там та же задача уже решена, и
+        расхождение заставило бы сопоставлять платформы руками в админках.
+        Существующие строки заполняются значением SITE_5E24 — до этой миграции
+        в сервис писал только сайт 2024. То же значение подставляет сервис
+        запросам без поля, и это не совпадение, а условие того, чтобы миграция
+        не уронила прод: уже задеплоенный фронт поле не присылает, и если бы
+        бэкфилл и фолбэк разошлись, он спрашивал бы один ключ, а строки лежали
+        бы под другим — ленты опустели бы.
+        Дефолт на колонке оставлен по той же причине: во время выката сервис
+        уже принимает запросы, а фронты ещё не начали присылать поле.
+      changes:
+        - addColumn:
+            tableName: comments
+            schemaName: comment
+            columns:
+              - column:
+                  name: source_platform
+                  type: varchar(50)
+                  # В кавычках намеренно: значение должно доехать до БД строкой,
+                  # а не значением, которое YAML-парсер может истолковать по-своему.
+                  defaultValue: 'SITE_5E24'
+                  constraints:
+                    nullable: false
+
+  - changeSet:
+      id: rebuild-comment-page-indexes-with-source-platform
+      author: ttg
+      comment: >-
+        Индексы выборок страницы перестраиваются с source_platform в префиксе:
+        после добавления поля все запросы по паре section + url фильтруют ещё
+        и по нему, и прежние индексы без платформы стали менее селективными.
+      changes:
+        - dropIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_section_url
+
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_platform_section_url
+            columns:
+              - column:
+                  name: source_platform
+              - column:
+                  name: section
+              - column:
+                  name: url
+
+        - dropIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_root
+
+        - createIndex:
+            tableName: comments
+            schemaName: comment
+            indexName: idx_comments_platform_root
+            columns:
+              - column:
+                  name: source_platform
+              - column:
+                  name: section
+              - column:
+                  name: url
+              - column:
+                  name: parent_id
