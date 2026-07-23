@@ -71,8 +71,10 @@ public class InternalCommentController
     @PostMapping("/rename-by-author")
     @Operation(
             summary = "Обновить имя автора в его комментариях",
-            description = "Массово переписывает снимок имени во всех комментариях автора на переданное "
+            description = "Массово переписывает снимок имени в комментариях автора на переданное "
                     + "отображаемое имя. Чинит имя и в старых комментариях, и в подписи «в ответ {имя}». "
+                    + "sourcePlatform ограничивает переименование одним сайтом (без него — все "
+                    + "платформы автора): authorId общий на всех сайтах, а имя у каждого сайта своё. "
                     + "Вызывается сайтом при смене пользователем имени и после публикации комментария. "
                     + "Идемпотентно: повторный вызов с тем же именем вернёт affected = 0."
     )
@@ -84,7 +86,9 @@ public class InternalCommentController
     })
     public AffectedCommentsResponse renameByAuthor(@Valid @RequestBody final RenameAuthorRequest request)
     {
-        return new AffectedCommentsResponse(
-                commentService.renameAuthor(request.getAuthorId(), request.getDisplayName()));
+        return new AffectedCommentsResponse(commentService.renameAuthor(
+                request.getAuthorId(),
+                request.getSourcePlatform(),
+                request.getDisplayName()));
     }
 }

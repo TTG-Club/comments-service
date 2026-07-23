@@ -31,7 +31,6 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -784,6 +783,33 @@ class CommentServiceTest
         commentService.getAllComments(SourcePlatform.SITE_5E14, null, PageRequest.of(0, 20));
 
         verify(commentRepository).findForModeration(eq(SourcePlatform.SITE_5E14), isNull(), any(Pageable.class));
+    }
+
+    /**
+     * Переименование скоупится платформой: authorId общий у пользователя на всех сайтах,
+     * поэтому имя, заданное на одном сайте, не должно трогать комментарии на других. Имя
+     * перед запросом обрезается от пробелов.
+     */
+    @Test
+    void renameAuthorScopesByPlatformAndTrims()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        commentService.renameAuthor(authorId, SourcePlatform.SITE_5E14, "  Новое имя  ");
+
+        verify(commentRepository).renameAuthor(
+                eq(authorId), eq(SourcePlatform.SITE_5E14), eq("Новое имя"));
+    }
+
+    /** Без платформы (null) правятся комментарии автора на всех сайтах. */
+    @Test
+    void renameAuthorWithoutPlatformAffectsAll()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        commentService.renameAuthor(authorId, null, "Имя");
+
+        verify(commentRepository).renameAuthor(eq(authorId), isNull(), eq("Имя"));
     }
 
     /**
