@@ -1,8 +1,11 @@
 package club.ttg.comment.controller;
 
 import club.ttg.comment.dto.request.CreateCommentRequest;
+import club.ttg.comment.dto.request.MyCommentsFilter;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.dto.response.MyCommentResponse;
+import club.ttg.comment.dto.response.MyCommentsUpdatesResponse;
 import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.service.CommentService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -17,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -31,6 +35,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -229,6 +234,71 @@ public class CommentController
     )
     {
         return ResponseEntity.ok(commentService.getUserCommentCount(extractUserId(jwt)));
+    }
+
+    @GetMapping("/my")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(
+            summary = "Свои комментарии (профиль)",
+            description = "Возвращает комментарии пользователя из токена (клейм sub) постранично, "
+                    + "от новых к старым, вместе со сводкой чужих ответов на каждый: сколько ответили "
+                    + "всего, сколько новых и кто с чем ответил последним. Статусы не фильтруются, "
+                    + "и надгробием комментарий не маскируется — автор смотрит своё, поэтому текст "
+                    + "удалённого и скрытого комментария приходит вместе со статусом. "
+                    + "Ответами считаются только чужие опубликованные ответы первого уровня. "
+                    + "Без sourcePlatform приходят комментарии со всех сайтов сервиса — у профиля, "
+                    + "в отличие от страницы обсуждения, нет одной «своей» платформы."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Страница своих комментариев"),
+            @ApiResponse(responseCode = "400", description = "Некорректный filter или since", content = @Content),
+            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content)
+    })
+    public Page<MyCommentResponse> getMyComments(
+            @Parameter(description = SOURCE_PLATFORM_FILTER_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
+            @Parameter(description = "Что показывать: все комментарии, только с ответами "
+                    + "или только с ответами новее since")
+            @RequestParam(defaultValue = "ALL") final MyCommentsFilter filter,
+            @Parameter(description = "Отметка просмотра — дата, полученная ранее из /my/updates. "
+                    + "Ответы новее неё считаются новыми; без параметра новыми считаются все",
+                    example = "2026-08-18T10:09:46+03:00")
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) final OffsetDateTime since,
+            @Parameter(description = "Параметры пагинации (page, size)")
+            @PageableDefault(size = 20) final Pageable pageable,
+            @Parameter(hidden = true) @AuthenticationPrincipal final Jwt jwt
+    )
+    {
+        return commentService.getMyComments(extractUserId(jwt), sourcePlatform, filter, since, pageable);
+    }
+
+    @GetMapping("/my/updates")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(
+            summary = "Сводка новых ответов (профиль)",
+            description = "Возвращает, сколько чужих ответов на комментарии пользователя появилось "
+                    + "позже отметки since, и дату самого свежего ответа за всё время. По ним профиль "
+                    + "рисует индикатор «вам ответили», не загружая список. Дату из ответа клиент "
+                    + "присылает обратно параметром since, когда пометит ответы просмотренными. "
+                    + "Фильтр по платформе работает так же, как в списке."
+    )
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Сводка новых ответов"),
+            @ApiResponse(responseCode = "400", description = "Некорректный since", content = @Content),
+            @ApiResponse(responseCode = "401", description = "Требуется аутентификация", content = @Content)
+    })
+    public MyCommentsUpdatesResponse getMyCommentsUpdates(
+            @Parameter(description = SOURCE_PLATFORM_FILTER_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
+            @Parameter(description = "Отметка просмотра — дата, полученная ранее из этой же ручки",
+                    example = "2026-08-18T10:09:46+03:00")
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) final OffsetDateTime since,
+            @Parameter(hidden = true) @AuthenticationPrincipal final Jwt jwt
+    )
+    {
+        return commentService.getMyCommentsUpdates(extractUserId(jwt), sourcePlatform, since);
     }
 
     @GetMapping("/latest")

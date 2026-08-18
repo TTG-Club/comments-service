@@ -13,8 +13,15 @@ import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.data.repository.query.parser.PartTree;
 
 import java.lang.reflect.Method;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -119,6 +126,40 @@ class CommentRepositoryQuerySyntaxTest
         // что несуществующее свойство он действительно отвергает.
         assertThatThrownBy(() -> new PartTree("findByNoSuchProperty", Comment.class))
                 .isInstanceOf(PropertyReferenceException.class);
+    }
+
+    /**
+     * Псевдонимы в сводке ответов должны совпадать с геттерами проекции: Spring Data сопоставляет
+     * их по имени, и расхождение — переименовали геттер, а запрос забыли — обнаружилось бы только
+     * на живой БД. Здесь БД нет, поэтому сверяем имена напрямую.
+     */
+    @Test
+    void replyAggregateAliasesMatchProjectionGetters() throws Exception
+    {
+        final String jpql = CommentRepository.class
+                .getMethod("aggregateRepliesByParent", Collection.class, UUID.class, OffsetDateTime.class)
+                .getAnnotation(Query.class)
+                .value();
+
+        final String selection = jpql.substring(0, jpql.indexOf(" FROM "));
+        final Matcher matcher = Pattern.compile("\\bAS\\s+(\\w+)").matcher(selection);
+
+        final Set<String> aliases = new HashSet<>();
+
+        while (matcher.find())
+        {
+            aliases.add(matcher.group(1));
+        }
+
+        final Set<String> getters = new HashSet<>();
+
+        for (final Method method : CommentReplyAggregate.class.getDeclaredMethods())
+        {
+            final String name = method.getName();
+            getters.add(Character.toLowerCase(name.charAt(3)) + name.substring(4));
+        }
+
+        assertThat(aliases).isEqualTo(getters);
     }
 
     private static void compile(final String jpql)

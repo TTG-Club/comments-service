@@ -1,8 +1,11 @@
 package club.ttg.comment.service;
 
 import club.ttg.comment.dto.request.CreateCommentRequest;
+import club.ttg.comment.dto.request.MyCommentsFilter;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.dto.response.MyCommentResponse;
+import club.ttg.comment.dto.response.MyCommentsUpdatesResponse;
 import club.ttg.comment.exception.CommentAccessDeniedException;
 import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.mapper.CommentMapper;
@@ -11,6 +14,7 @@ import club.ttg.comment.model.CommentComplaint;
 import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentComplaintRepository;
+import club.ttg.comment.repository.CommentReplyAggregate;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -21,9 +25,14 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -33,6 +42,14 @@ public class CommentService
     private final CommentComplaintRepository commentComplaintRepository;
     private final CommentMapper commentMapper;
     private final CommentRateLimitService commentRateLimitService;
+
+    /**
+     * Дата заведомо древнее любого комментария — подставляется вместо отсутствующей отметки
+     * просмотра, чтобы запросы обходились одним условием «новее чем», без ветки на null.
+     */
+    private static final OffsetDateTime BEGINNING_OF_TIME = OffsetDateTime.of(
+            1970, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC
+    );
 
     /**
      * Корневые комментарии страницы. Кроме опубликованных, отдаются надгробия: удалённые либо
@@ -193,6 +210,149 @@ public class CommentService
     public long getUserCommentCount(final UUID authorId)
     {
         return commentRepository.countByAuthorIdAndStatus(authorId, CommentStatus.PUBLISHED);
+    }
+
+    /**
+     * Комментарии пользователя для его профиля: страница по фильтру плюс сводка чужих ответов
+     * на каждый комментарий страницы. Порядок всегда от новых к старым — тот же, что и в ленте
+     * обсуждения, так человеку проще узнать свой комментарий.
+     * <p>
+     * Ответы считаются двумя запросами на всю страницу (сводка и последний ответ на каждый
+     * комментарий), а не по запросу на карточку. Статус комментариев не фильтруется: своё
+     * удалённое и скрытое пользователь видит с пометкой статуса — иначе комментарий просто
+     * пропадал бы без объяснений.
+     *
+     * @param authorId       автор из клейма sub
+     * @param sourcePlatform платформа; {@code null} — комментарии со всех сайтов сервиса,
+     *                       как в лентах модерации (у профиля нет одного «своего» обсуждения)
+     * @param filter         что показывать: всё, только с ответами или только с новыми ответами
+     * @param since          отметка просмотра; {@code null} — пользователь не видел ещё ни одного ответа
+     */
+    @Transactional(readOnly = true)
+    public Page<MyCommentResponse> getMyComments(
+            final UUID authorId,
+            final SourcePlatform sourcePlatform,
+            final MyCommentsFilter filter,
+            final OffsetDateTime since,
+            final Pageable pageable
+    )
+    {
+        final OffsetDateTime effectiveSince = orBeginningOfTime(since);
+
+        final Pageable sortedByNewest = PageRequest.of(
+                pageable.getPageNumber(),
+                pageable.getPageSize(),
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
+
+        final Page<Comment> comments = switch (filter == null ? MyCommentsFilter.ALL : filter)
+        {
+            // Тот же запрос, что и в ленте модерации: «все комментарии автора, статусы не
+            // фильтруются». Здесь authorId задан всегда, поэтому чужого в выдачу не попадёт.
+            case ALL -> commentRepository.findForModeration(sourcePlatform, authorId, sortedByNewest);
+            case WITH_REPLIES -> commentRepository.findByAuthorIdHavingRepliesSince(
+                    authorId,
+                    sourcePlatform,
+                    BEGINNING_OF_TIME,
+                    sortedByNewest
+            );
+            case NEW_REPLIES -> commentRepository.findByAuthorIdHavingRepliesSince(
+                    authorId,
+                    sourcePlatform,
+                    effectiveSince,
+                    sortedByNewest
+            );
+        };
+
+        // Пустую страницу дальше вести нельзя: выборки ниже принимают список идентификаторов,
+        // а пустой IN — невалидный SQL в нативном запросе за последними ответами.
+        if (comments.isEmpty())
+        {
+            return comments.map(commentMapper::toMyResponse);
+        }
+
+        final List<UUID> commentIds = comments.getContent().stream().map(Comment::getId).toList();
+
+        final Map<UUID, CommentReplyAggregate> aggregates = commentRepository
+                .aggregateRepliesByParent(commentIds, authorId, effectiveSince)
+                .stream()
+                .collect(Collectors.toMap(CommentReplyAggregate::getParentId, Function.identity()));
+
+        final Map<UUID, Comment> latestReplies = commentRepository
+                .findLatestReplyPerParent(commentIds, authorId)
+                .stream()
+                .collect(Collectors.toMap(Comment::getParentId, Function.identity()));
+
+        return comments.map(comment -> buildMyResponse(
+                comment,
+                aggregates.get(comment.getId()),
+                latestReplies.get(comment.getId())
+        ));
+    }
+
+    /**
+     * Сводка «вам ответили» для индикатора в профиле и в шапке сайта: сколько чужих ответов
+     * появилось позже отметки просмотра и когда ответили в последний раз. {@code sourcePlatform}
+     * опционален и сужает счёт до одного сайта — как и в списке.
+     * <p>
+     * Дату из ответа клиент присылает обратно параметром {@code since}, пометив ответы
+     * просмотренными: собственная метка времени браузера сравнивалась бы с серверными датами
+     * со сдвигом на часовой пояс и расхождение часов.
+     */
+    @Transactional(readOnly = true)
+    public MyCommentsUpdatesResponse getMyCommentsUpdates(
+            final UUID authorId,
+            final SourcePlatform sourcePlatform,
+            final OffsetDateTime since
+    )
+    {
+        return new MyCommentsUpdatesResponse(
+                commentRepository.countRepliesToAuthorSince(
+                        authorId,
+                        sourcePlatform,
+                        orBeginningOfTime(since)
+                ),
+                commentRepository.findLastReplyAtToAuthor(authorId, sourcePlatform)
+        );
+    }
+
+    /**
+     * Собирает карточку профиля: сам комментарий плюс сводка ответов на него. Сводки нет —
+     * значит, никто не отвечал: счётчики остаются нулевыми, превью пустым.
+     */
+    private MyCommentResponse buildMyResponse(
+            final Comment comment,
+            final CommentReplyAggregate aggregate,
+            final Comment latestReply
+    )
+    {
+        final MyCommentResponse response = commentMapper.toMyResponse(comment);
+        response.setParentAuthorName(resolveParentAuthorName(comment.getParentId()));
+
+        if (aggregate != null)
+        {
+            response.setReplyCount((int) aggregate.getReplyCount());
+            response.setNewReplyCount((int) aggregate.getNewReplyCount());
+            response.setLastReplyAt(aggregate.getLastReplyAt());
+        }
+
+        if (latestReply != null)
+        {
+            response.setLastReply(commentMapper.toReplyPreview(latestReply));
+        }
+
+        return response;
+    }
+
+    /**
+     * Отметка просмотра для запросов. Отсутствие отметки — «пользователь не видел ещё ничего»,
+     * поэтому вместо неё берётся дата заведомо древнее любого комментария: сравнение
+     * {@code createdAt > :since} остаётся одним и тем же выражением, а запросам не нужна ветка
+     * на {@code IS NULL}.
+     */
+    private OffsetDateTime orBeginningOfTime(final OffsetDateTime since)
+    {
+        return since == null ? BEGINNING_OF_TIME : since;
     }
 
     /**

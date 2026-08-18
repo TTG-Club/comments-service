@@ -1,7 +1,9 @@
 package club.ttg.comment.controller;
 
 import club.ttg.comment.config.SecurityConfig;
+import club.ttg.comment.dto.request.MyCommentsFilter;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.dto.response.MyCommentsUpdatesResponse;
 import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.exception.CommentAccessDeniedException;
 import club.ttg.comment.exception.CommentStateException;
@@ -23,6 +25,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Date;
 import java.util.List;
@@ -174,6 +177,84 @@ class CommentControllerSecurityTest
 
         // Считаем по sub из токена, а не по чему-либо из запроса.
         verify(commentService).getUserCommentCount(userId);
+    }
+
+    @Test
+    void guestCannotReadOwnComments() throws Exception
+    {
+        // Раздел профиля приватен: /my не подпадает ни под один публичный паттерн
+        // и остаётся под anyRequest().authenticated().
+        mockMvc.perform(get("/api/v1/comments/my"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void userReadsOwnComments() throws Exception
+    {
+        final UUID userId = UUID.randomUUID();
+        given(commentService.getMyComments(any(UUID.class), any(), any(), any(), any(Pageable.class)))
+                .willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/my")
+                        .param("sourcePlatform", "SITE_5E24")
+                        .param("filter", "NEW_REPLIES")
+                        .param("since", "2026-08-18T10:09:46+03:00")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"), userId)))
+                .andExpect(status().isOk());
+
+        // Список строится по sub из токена, а не по чему-либо из запроса.
+        verify(commentService).getMyComments(
+                eq(userId),
+                eq(SourcePlatform.SITE_5E24),
+                eq(MyCommentsFilter.NEW_REPLIES),
+                eq(OffsetDateTime.parse("2026-08-18T10:09:46+03:00")),
+                any(Pageable.class)
+        );
+    }
+
+    @Test
+    void ownCommentsDefaultToAllWithoutSince() throws Exception
+    {
+        given(commentService.getMyComments(any(UUID.class), any(), any(), any(), any(Pageable.class)))
+                .willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/my")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"))))
+                .andExpect(status().isOk());
+
+        // Без параметров — все свои комментарии со всех платформ; отметки просмотра нет,
+        // её подставляет сервис.
+        verify(commentService).getMyComments(
+                any(UUID.class),
+                eq(null),
+                eq(MyCommentsFilter.ALL),
+                eq(null),
+                any(Pageable.class)
+        );
+    }
+
+    @Test
+    void guestCannotReadOwnCommentsUpdates() throws Exception
+    {
+        mockMvc.perform(get("/api/v1/comments/my/updates"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void userReadsOwnCommentsUpdates() throws Exception
+    {
+        final UUID userId = UUID.randomUUID();
+        final OffsetDateTime since = OffsetDateTime.parse("2026-08-18T10:09:46+03:00");
+        given(commentService.getMyCommentsUpdates(any(UUID.class), any(), any()))
+                .willReturn(new MyCommentsUpdatesResponse(2L, since));
+
+        mockMvc.perform(get("/api/v1/comments/my/updates")
+                        .param("sourcePlatform", "SITE_5E24")
+                        .param("since", since.toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + issueToken(List.of("USER"), userId)))
+                .andExpect(status().isOk());
+
+        verify(commentService).getMyCommentsUpdates(userId, SourcePlatform.SITE_5E24, since);
     }
 
     @Test

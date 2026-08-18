@@ -10,6 +10,8 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -248,4 +250,88 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
               AND t.total_reply_count <> sub.cnt
             """, nativeQuery = true)
     void recalculateTotalReplyCounts();
+
+    /**
+     * Комментарии пользователя, на которые ему ответили позже отметки {@code since}. Одним
+     * запросом обслуживает оба фильтра профиля: «с ответами» приходит с отметкой в далёком
+     * прошлом, «новые ответы» — с реальной датой просмотра. {@code sourcePlatform} опционален
+     * и, как в лентах модерации, {@code null} снимает фильтр — профиль общий на все сайты.
+     * <p>
+     * Учитываются только чужие опубликованные ответы первого уровня: свой ответ самому себе
+     * новостью не является, а переписка чужих людей глубже в ветке пользователю не адресована.
+     */
+    @Query("SELECT c FROM Comment c WHERE c.authorId = :authorId "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform) AND EXISTS ("
+            + "SELECT 1 FROM Comment r WHERE r.parentId = c.id AND r.authorId <> :authorId "
+            + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "AND r.createdAt > :since)")
+    Page<Comment> findByAuthorIdHavingRepliesSince(
+            @Param("authorId") UUID authorId,
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            @Param("since") OffsetDateTime since,
+            Pageable pageable
+    );
+
+    /**
+     * Сводка ответов сразу по странице комментариев пользователя: сколько ответили всего,
+     * когда ответили в последний раз и сколько ответов новее отметки просмотра.
+     */
+    @Query("SELECT r.parentId AS parentId, COUNT(r) AS replyCount, MAX(r.createdAt) AS lastReplyAt, "
+            + "SUM(CASE WHEN r.createdAt > :since THEN 1 ELSE 0 END) AS newReplyCount "
+            + "FROM Comment r WHERE r.parentId IN :parentIds AND r.authorId <> :authorId "
+            + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "GROUP BY r.parentId")
+    List<CommentReplyAggregate> aggregateRepliesByParent(
+            @Param("parentIds") Collection<UUID> parentIds,
+            @Param("authorId") UUID authorId,
+            @Param("since") OffsetDateTime since
+    );
+
+    /**
+     * Последний чужой ответ на каждый из указанных комментариев — превью «кто и что ответил»
+     * в профиле. {@code DISTINCT ON} (расширение Postgres, как и пересчёты счётчиков выше)
+     * оставляет по одной строке на родителя прямо в базе: иначе пришлось бы тянуть ветки
+     * целиком и отбирать последние в памяти.
+     */
+    @Query(value = "SELECT DISTINCT ON (r.parent_id) r.* FROM comment.comments r "
+            + "WHERE r.parent_id IN (:parentIds) AND r.author_id <> :authorId AND r.status = 'PUBLISHED' "
+            + "ORDER BY r.parent_id, r.created_at DESC, r.id DESC", nativeQuery = true)
+    List<Comment> findLatestReplyPerParent(
+            @Param("parentIds") Collection<UUID> parentIds,
+            @Param("authorId") UUID authorId
+    );
+
+    /**
+     * Сколько чужих ответов на комментарии пользователя появилось позже отметки просмотра —
+     * число для индикатора «вам ответили». Платформа берётся у ответа, а не у родителя: ответ
+     * всегда лежит в том же обсуждении, что и комментарий, на который отвечают.
+     * <p>
+     * Родительские комментарии по статусу не фильтруются: ответ на удалённый пользователем
+     * комментарий он всё равно должен увидеть — в профиле такой комментарий показывается
+     * с пометкой статуса, а не прячется.
+     */
+    @Query("SELECT COUNT(r) FROM Comment r WHERE r.authorId <> :authorId "
+            + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "AND (:sourcePlatform IS NULL OR r.sourcePlatform = :sourcePlatform) "
+            + "AND r.createdAt > :since AND r.parentId IN ("
+            + "SELECT p.id FROM Comment p WHERE p.authorId = :authorId)")
+    long countRepliesToAuthorSince(
+            @Param("authorId") UUID authorId,
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            @Param("since") OffsetDateTime since
+    );
+
+    /**
+     * Дата самого свежего чужого ответа пользователю за всё время. Её клиент присылает обратно
+     * параметром {@code since}, когда помечает ответы просмотренными, — сравнивать серверные
+     * даты с часами браузера нельзя.
+     */
+    @Query("SELECT MAX(r.createdAt) FROM Comment r WHERE r.authorId <> :authorId "
+            + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "AND (:sourcePlatform IS NULL OR r.sourcePlatform = :sourcePlatform) "
+            + "AND r.parentId IN (SELECT p.id FROM Comment p WHERE p.authorId = :authorId)")
+    OffsetDateTime findLastReplyAtToAuthor(
+            @Param("authorId") UUID authorId,
+            @Param("sourcePlatform") SourcePlatform sourcePlatform
+    );
 }

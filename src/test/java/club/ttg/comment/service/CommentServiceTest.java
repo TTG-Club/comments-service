@@ -1,8 +1,11 @@
 package club.ttg.comment.service;
 
 import club.ttg.comment.dto.request.CreateCommentRequest;
+import club.ttg.comment.dto.request.MyCommentsFilter;
 import club.ttg.comment.dto.request.UpdateCommentRequest;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.dto.response.MyCommentResponse;
+import club.ttg.comment.dto.response.MyCommentsUpdatesResponse;
 import club.ttg.comment.exception.CommentAccessDeniedException;
 import club.ttg.comment.exception.CommentStateException;
 import club.ttg.comment.mapper.CommentMapperImpl;
@@ -10,6 +13,7 @@ import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentComplaintRepository;
+import club.ttg.comment.repository.CommentReplyAggregate;
 import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +23,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -887,6 +892,209 @@ class CommentServiceTest
         final Page<CommentResponse> page = commentService.getDislikedComments(null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
+    }
+
+    @Test
+    void myCommentsCarryRepliesOfTheirOwnComment()
+    {
+        final UUID authorId = UUID.randomUUID();
+        final Comment answered = authoredBy(authorId);
+        final Comment untouched = authoredBy(authorId);
+
+        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(answered, untouched)));
+
+        final OffsetDateTime lastReplyAt = OffsetDateTime.parse("2026-08-18T10:00:00Z");
+
+        when(commentRepository.aggregateRepliesByParent(any(), eq(authorId), any(OffsetDateTime.class)))
+                .thenReturn(List.of(aggregate(answered.getId(), 3, 1, lastReplyAt)));
+
+        final Comment reply = published(UUID.randomUUID(), answered.getId());
+        reply.setAuthorNameSnapshot("ivan");
+        reply.setContent("нет, в PHB'24 иначе");
+
+        when(commentRepository.findLatestReplyPerParent(any(), eq(authorId))).thenReturn(List.of(reply));
+
+        final Page<MyCommentResponse> page = commentService.getMyComments(
+                authorId,
+                null,
+                MyCommentsFilter.ALL,
+                null,
+                PageRequest.of(0, 20)
+        );
+
+        final MyCommentResponse withReplies = myResponseFor(page, answered.getId());
+        assertThat(withReplies.getReplyCount()).isEqualTo(3);
+        assertThat(withReplies.getNewReplyCount()).isEqualTo(1);
+        assertThat(withReplies.getLastReplyAt()).isEqualTo(lastReplyAt);
+        assertThat(withReplies.getLastReply().getAuthorName()).isEqualTo("ivan");
+        assertThat(withReplies.getLastReply().getContent()).isEqualTo("нет, в PHB'24 иначе");
+
+        // Сводка чужая карточку не задевает: без ответов счётчики нулевые, превью пустое.
+        final MyCommentResponse withoutReplies = myResponseFor(page, untouched.getId());
+        assertThat(withoutReplies.getReplyCount()).isZero();
+        assertThat(withoutReplies.getLastReplyAt()).isNull();
+        assertThat(withoutReplies.getLastReply()).isNull();
+    }
+
+    @Test
+    void myDeletedCommentKeepsItsTextForItsAuthor()
+    {
+        final UUID authorId = UUID.randomUUID();
+        final Comment deleted = authoredBy(authorId);
+        deleted.markAsDeleted();
+
+        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(deleted)));
+
+        final Page<MyCommentResponse> page = commentService.getMyComments(
+                authorId,
+                null,
+                MyCommentsFilter.ALL,
+                null,
+                PageRequest.of(0, 20)
+        );
+
+        // Маскировка надгробием — правило публичных выдач: своё удалённое автор видит целиком.
+        final MyCommentResponse response = myResponseFor(page, deleted.getId());
+        assertThat(response.getContent()).isEqualTo("текст");
+        assertThat(response.getStatus()).isEqualTo(CommentStatus.DELETED);
+    }
+
+    @Test
+    void myEmptyPageDoesNotAskForReplies()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        assertThat(commentService.getMyComments(authorId, null, MyCommentsFilter.ALL, null, PageRequest.of(0, 20)))
+                .isEmpty();
+
+        // Пустой список идентификаторов в IN — невалидный SQL нативного запроса за ответами.
+        verify(commentRepository, never()).aggregateRepliesByParent(any(), any(), any());
+        verify(commentRepository, never()).findLatestReplyPerParent(any(), any());
+    }
+
+    @Test
+    void newRepliesFilterAsksRepositoryWithSeenMark()
+    {
+        final UUID authorId = UUID.randomUUID();
+        final OffsetDateTime since = OffsetDateTime.parse("2026-08-18T10:00:00Z");
+
+        when(commentRepository.findByAuthorIdHavingRepliesSince(any(), any(), any(), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        commentService.getMyComments(
+                authorId,
+                SourcePlatform.SITE_5E24,
+                MyCommentsFilter.NEW_REPLIES,
+                since,
+                PageRequest.of(0, 20)
+        );
+
+        verify(commentRepository).findByAuthorIdHavingRepliesSince(
+                eq(authorId),
+                eq(SourcePlatform.SITE_5E24),
+                eq(since),
+                any(Pageable.class)
+        );
+    }
+
+    @Test
+    void withRepliesFilterIgnoresSeenMark()
+    {
+        final UUID authorId = UUID.randomUUID();
+
+        when(commentRepository.findByAuthorIdHavingRepliesSince(any(), any(), any(), any(Pageable.class)))
+                .thenReturn(Page.empty());
+
+        // «С ответами» — про наличие ответов вообще, отметка просмотра его сужать не должна.
+        commentService.getMyComments(
+                authorId,
+                null,
+                MyCommentsFilter.WITH_REPLIES,
+                OffsetDateTime.parse("2026-08-18T10:00:00Z"),
+                PageRequest.of(0, 20)
+        );
+
+        verify(commentRepository).findByAuthorIdHavingRepliesSince(
+                eq(authorId),
+                eq(null),
+                eq(OffsetDateTime.parse("1970-01-01T00:00:00Z")),
+                any(Pageable.class)
+        );
+    }
+
+    @Test
+    void updatesWithoutSeenMarkCountEveryReply()
+    {
+        final UUID authorId = UUID.randomUUID();
+        final OffsetDateTime lastReplyAt = OffsetDateTime.parse("2026-08-18T10:00:00Z");
+
+        when(commentRepository.countRepliesToAuthorSince(eq(authorId), any(), any(OffsetDateTime.class)))
+                .thenReturn(4L);
+        when(commentRepository.findLastReplyAtToAuthor(authorId, null)).thenReturn(lastReplyAt);
+
+        final MyCommentsUpdatesResponse updates = commentService.getMyCommentsUpdates(authorId, null, null);
+
+        assertThat(updates.getCount()).isEqualTo(4L);
+        assertThat(updates.getLastReplyAt()).isEqualTo(lastReplyAt);
+
+        // Отметки нет — пользователь не видел ещё ни одного ответа, значит новы все.
+        verify(commentRepository).countRepliesToAuthorSince(
+                authorId,
+                null,
+                OffsetDateTime.parse("1970-01-01T00:00:00Z")
+        );
+    }
+
+    private static MyCommentResponse myResponseFor(final Page<MyCommentResponse> page, final UUID id)
+    {
+        return page.getContent().stream()
+                .filter(response -> id.equals(response.getId()))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    /**
+     * Проекция сводки ответов — простой реализацией, а не моком: помощник вызывается прямо
+     * внутри стаба репозитория, и вложенное стабирование Mockito ломает внешнее.
+     */
+    private static CommentReplyAggregate aggregate(
+            final UUID parentId,
+            final long replyCount,
+            final long newReplyCount,
+            final OffsetDateTime lastReplyAt
+    )
+    {
+        return new CommentReplyAggregate()
+        {
+            @Override
+            public UUID getParentId()
+            {
+                return parentId;
+            }
+
+            @Override
+            public long getReplyCount()
+            {
+                return replyCount;
+            }
+
+            @Override
+            public OffsetDateTime getLastReplyAt()
+            {
+                return lastReplyAt;
+            }
+
+            @Override
+            public long getNewReplyCount()
+            {
+                return newReplyCount;
+            }
+        };
     }
 
     private static CommentResponse responseFor(final Page<CommentResponse> page, final UUID id)

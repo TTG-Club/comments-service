@@ -1,7 +1,9 @@
 package club.ttg.comment.mapper;
 
 import club.ttg.comment.dto.request.CreateCommentRequest;
+import club.ttg.comment.dto.response.CommentReplyPreview;
 import club.ttg.comment.dto.response.CommentResponse;
+import club.ttg.comment.dto.response.MyCommentResponse;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.SourcePlatform;
 import org.mapstruct.Mapper;
@@ -56,4 +58,20 @@ public interface CommentMapper
     CommentResponse toResponse(Comment comment);
 
     List<CommentResponse> toResponseList(List<Comment> comments);
+
+    /**
+     * Комментарий пользователя для его профиля. Всё, что связано с ответами
+     * ({@code replyCount}, {@code newReplyCount}, {@code lastReplyAt}, {@code lastReply}),
+     * и имя автора родителя считаются пачкой на страницу и проставляются сервисом — счётчик
+     * сущности здесь не годится: в нём и свои ответы тоже.
+     */
+    @Mapping(target = "parentAuthorName", ignore = true)
+    @Mapping(target = "replyCount", ignore = true)
+    @Mapping(target = "newReplyCount", ignore = true)
+    @Mapping(target = "lastReplyAt", ignore = true)
+    @Mapping(target = "lastReply", ignore = true)
+    MyCommentResponse toMyResponse(Comment comment);
+
+    @Mapping(target = "authorName", source = "authorNameSnapshot")
+    CommentReplyPreview toReplyPreview(Comment reply);
 }
