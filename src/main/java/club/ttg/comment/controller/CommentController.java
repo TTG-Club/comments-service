@@ -302,6 +302,26 @@ public class CommentController
         return commentService.getMyCommentsUpdates(extractUserId(jwt), sourcePlatform, since);
     }
 
+    @GetMapping("/recent")
+    @Operation(
+            summary = "Последние комментарии сайта",
+            description = "Возвращает опубликованные комментарии всех страниц постранично, "
+                    + "от новых к старым — для ленты «что обсуждают прямо сейчас». В каждом "
+                    + "комментарии есть section и url страницы, где он оставлен, поэтому по нему "
+                    + "можно построить ссылку. Удалённые и скрытые в ленту не попадают, надгробий "
+                    + "в ней нет. Размер страницы ограничен сверху 50: ручка публичная."
+    )
+    @ApiResponse(responseCode = "200", description = "Страница последних комментариев")
+    public Page<CommentResponse> getRecentComments(
+            @Parameter(description = SOURCE_PLATFORM_FILTER_DESCRIPTION, example = "SITE_5E24")
+            @RequestParam(required = false) final SourcePlatform sourcePlatform,
+            @Parameter(description = "Параметры пагинации (page, size)")
+            @PageableDefault(size = 20) final Pageable pageable
+    )
+    {
+        return commentService.getRecentComments(sourcePlatform, pageable);
+    }
+
     @GetMapping("/latest")
     @Operation(
             summary = "Последний комментарий страницы",

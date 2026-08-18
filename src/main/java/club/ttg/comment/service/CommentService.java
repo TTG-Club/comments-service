@@ -44,6 +44,12 @@ public class CommentService
     private final CommentRateLimitService commentRateLimitService;
 
     /**
+     * Потолок размера страницы публичной ленты. Ручка открыта без авторизации, и без
+     * ограничения любой запрос мог бы вычерпать всю таблицу одной страницей.
+     */
+    private static final int MAX_RECENT_PAGE_SIZE = 50;
+
+    /**
      * Дата заведомо древнее любого комментария — подставляется вместо отсутствующей отметки
      * просмотра, чтобы запросы обходились одним условием «новее чем», без ветки на null.
      */
@@ -351,6 +357,32 @@ public class CommentService
     private OffsetDateTime orBeginningOfTime(final OffsetDateTime since)
     {
         return since == null ? BEGINNING_OF_TIME : since;
+    }
+
+    /**
+     * Лента последних комментариев сайта — для страницы «что обсуждают прямо сейчас».
+     * Отдаются только опубликованные, от новых к старым, вместе с {@code section} и
+     * {@code url} страницы: по ним фронт строит ссылку на сам комментарий.
+     * <p>
+     * Размер страницы ограничен сверху: ручка публичная, и запрошенный размер приходит
+     * от кого угодно.
+     *
+     * @param sourcePlatform платформа; {@code null} — все сайты сервиса
+     */
+    @Transactional(readOnly = true)
+    public Page<CommentResponse> getRecentComments(
+            final SourcePlatform sourcePlatform,
+            final Pageable pageable
+    )
+    {
+        final Pageable sortedByNewest = PageRequest.of(
+                pageable.getPageNumber(),
+                Math.min(pageable.getPageSize(), MAX_RECENT_PAGE_SIZE),
+                Sort.by(Sort.Direction.DESC, "createdAt")
+        );
+
+        return commentRepository.findRecentPublished(sourcePlatform, sortedByNewest)
+                .map(this::buildResponse);
     }
 
     /**

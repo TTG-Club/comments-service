@@ -129,6 +129,30 @@ class CommentControllerSecurityTest
     }
 
     @Test
+    void guestReadsRecentComments() throws Exception
+    {
+        given(commentService.getRecentComments(any(), any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/recent")
+                        .param("sourcePlatform", "SITE_5E24"))
+                .andExpect(status().isOk());
+
+        // Лента читается без входа: страница «последние комментарии» открыта всем.
+        verify(commentService).getRecentComments(eq(SourcePlatform.SITE_5E24), any(Pageable.class));
+    }
+
+    @Test
+    void recentCommentsWithoutPlatformCoverAllSites() throws Exception
+    {
+        given(commentService.getRecentComments(any(), any(Pageable.class))).willReturn(Page.empty());
+
+        mockMvc.perform(get("/api/v1/comments/recent"))
+                .andExpect(status().isOk());
+
+        verify(commentService).getRecentComments(eq(null), any(Pageable.class));
+    }
+
+    @Test
     void guestReadsCommentById() throws Exception
     {
         given(commentService.getComment(any(UUID.class))).willReturn(new CommentResponse());

@@ -18,10 +18,12 @@ import club.ttg.comment.repository.CommentRepository;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -892,6 +894,24 @@ class CommentServiceTest
         final Page<CommentResponse> page = commentService.getDislikedComments(null, PageRequest.of(0, 20));
 
         assertThat(responseFor(page, reply.getId()).getParentAuthorName()).isEqualTo("родитель");
+    }
+
+    @Test
+    void recentCommentsPageSizeIsCapped()
+    {
+        when(commentRepository.findRecentPublished(any(), any(Pageable.class))).thenReturn(Page.empty());
+
+        commentService.getRecentComments(SourcePlatform.SITE_5E24, PageRequest.of(0, 500));
+
+        // Ручка публичная: запрошенный размер приходит от кого угодно и режется потолком.
+        final ArgumentCaptor<Pageable> pageable = ArgumentCaptor.forClass(Pageable.class);
+        verify(commentRepository).findRecentPublished(eq(SourcePlatform.SITE_5E24), pageable.capture());
+
+        assertThat(pageable.getValue().getPageSize()).isEqualTo(50);
+        assertThat(pageable.getValue().getSort().getOrderFor("createdAt"))
+                .isNotNull()
+                .extracting(Sort.Order::getDirection)
+                .isEqualTo(Sort.Direction.DESC);
     }
 
     @Test

@@ -252,6 +252,22 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     void recalculateTotalReplyCounts();
 
     /**
+     * Лента последних комментариев сайта: только опубликованные, без привязки к странице.
+     * {@code sourcePlatform} опционален — {@code null} возвращает комментарии со всех сайтов
+     * сервиса. Сортировку задаёт {@code Pageable}.
+     * <p>
+     * Надгробий здесь нет намеренно: в ленте «что обсуждают прямо сейчас» они не держат
+     * ветку (ветки нет вовсе) и превратились бы в строки без текста и автора.
+     */
+    @Query("SELECT c FROM Comment c "
+            + "WHERE c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform)")
+    Page<Comment> findRecentPublished(
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            Pageable pageable
+    );
+
+    /**
      * Опубликованные комментарии пользователя для его профиля. {@code sourcePlatform}
      * опционален и, как в лентах модерации, {@code null} снимает фильтр — профиль общий
      * на все сайты сервиса.
