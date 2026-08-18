@@ -218,9 +218,9 @@ public class CommentService
      * обсуждения, так человеку проще узнать свой комментарий.
      * <p>
      * Ответы считаются двумя запросами на всю страницу (сводка и последний ответ на каждый
-     * комментарий), а не по запросу на карточку. Статус комментариев не фильтруется: своё
-     * удалённое и скрытое пользователь видит с пометкой статуса — иначе комментарий просто
-     * пропадал бы без объяснений.
+     * комментарий), а не по запросу на карточку. Отдаются только опубликованные комментарии:
+     * раздел показывает живой вклад пользователя — тот же, что стоит счётчиком в профиле, —
+     * а удалённое им самим возвращать незачем.
      *
      * @param authorId       автор из клейма sub
      * @param sourcePlatform платформа; {@code null} — комментарии со всех сайтов сервиса,
@@ -247,9 +247,7 @@ public class CommentService
 
         final Page<Comment> comments = switch (filter == null ? MyCommentsFilter.ALL : filter)
         {
-            // Тот же запрос, что и в ленте модерации: «все комментарии автора, статусы не
-            // фильтруются». Здесь authorId задан всегда, поэтому чужого в выдачу не попадёт.
-            case ALL -> commentRepository.findForModeration(sourcePlatform, authorId, sortedByNewest);
+            case ALL -> commentRepository.findPublishedByAuthorId(authorId, sourcePlatform, sortedByNewest);
             case WITH_REPLIES -> commentRepository.findByAuthorIdHavingRepliesSince(
                     authorId,
                     sourcePlatform,

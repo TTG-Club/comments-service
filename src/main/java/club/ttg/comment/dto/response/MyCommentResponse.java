@@ -1,6 +1,5 @@
 package club.ttg.comment.dto.response;
 
-import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.model.SourcePlatform;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Getter;
@@ -9,10 +8,10 @@ import lombok.Setter;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
-@Schema(description = "Комментарий пользователя для его профиля. В отличие от публичных выдач "
-        + "надгробием не маскируется: автор смотрит своё, поэтому текст удалённого и скрытого "
-        + "комментария он видит вместе со статусом. Поля с ответами считают только чужие "
-        + "опубликованные ответы первого уровня — свой ответ самому себе новостью не является.")
+@Schema(description = "Опубликованный комментарий пользователя для его профиля. Статуса нет: "
+        + "удалённые и скрытые в раздел не попадают, поэтому все комментарии здесь "
+        + "опубликованные. Поля с ответами считают только чужие опубликованные ответы "
+        + "первого уровня — свой ответ самому себе новостью не является.")
 @Getter
 @Setter
 public class MyCommentResponse
@@ -37,9 +36,6 @@ public class MyCommentResponse
 
     @Schema(description = "Текст комментария")
     private String content;
-
-    @Schema(description = "Статус комментария", example = "PUBLISHED")
-    private CommentStatus status;
 
     @Schema(description = "Число чужих опубликованных ответов на комментарий", example = "2")
     private int replyCount;

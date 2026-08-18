@@ -252,15 +252,32 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     void recalculateTotalReplyCounts();
 
     /**
-     * Комментарии пользователя, на которые ему ответили позже отметки {@code since}. Одним
-     * запросом обслуживает оба фильтра профиля: «с ответами» приходит с отметкой в далёком
-     * прошлом, «новые ответы» — с реальной датой просмотра. {@code sourcePlatform} опционален
-     * и, как в лентах модерации, {@code null} снимает фильтр — профиль общий на все сайты.
+     * Опубликованные комментарии пользователя для его профиля. {@code sourcePlatform}
+     * опционален и, как в лентах модерации, {@code null} снимает фильтр — профиль общий
+     * на все сайты сервиса.
+     * <p>
+     * Удалённые и скрытые не отдаются: раздел показывает живой вклад пользователя, тот же,
+     * что считает {@link #countByAuthorIdAndStatus}. Сортировку задаёт {@code Pageable}.
+     */
+    @Query("SELECT c FROM Comment c WHERE c.authorId = :authorId "
+            + "AND c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
+            + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform)")
+    Page<Comment> findPublishedByAuthorId(
+            @Param("authorId") UUID authorId,
+            @Param("sourcePlatform") SourcePlatform sourcePlatform,
+            Pageable pageable
+    );
+
+    /**
+     * Опубликованные комментарии пользователя, на которые ему ответили позже отметки
+     * {@code since}. Одним запросом обслуживает оба фильтра профиля: «с ответами» приходит
+     * с отметкой в далёком прошлом, «новые ответы» — с реальной датой просмотра.
      * <p>
      * Учитываются только чужие опубликованные ответы первого уровня: свой ответ самому себе
      * новостью не является, а переписка чужих людей глубже в ветке пользователю не адресована.
      */
     @Query("SELECT c FROM Comment c WHERE c.authorId = :authorId "
+            + "AND c.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
             + "AND (:sourcePlatform IS NULL OR c.sourcePlatform = :sourcePlatform) AND EXISTS ("
             + "SELECT 1 FROM Comment r WHERE r.parentId = c.id AND r.authorId <> :authorId "
             + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
@@ -306,15 +323,16 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
      * число для индикатора «вам ответили». Платформа берётся у ответа, а не у родителя: ответ
      * всегда лежит в том же обсуждении, что и комментарий, на который отвечают.
      * <p>
-     * Родительские комментарии по статусу не фильтруются: ответ на удалённый пользователем
-     * комментарий он всё равно должен увидеть — в профиле такой комментарий показывается
-     * с пометкой статуса, а не прячется.
+     * Родитель обязан быть опубликованным — тем же условием, что и в списке: удалённого
+     * комментария в разделе нет, и индикатор, зажжённый ответом на него, было бы нечем
+     * погасить.
      */
     @Query("SELECT COUNT(r) FROM Comment r WHERE r.authorId <> :authorId "
             + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
             + "AND (:sourcePlatform IS NULL OR r.sourcePlatform = :sourcePlatform) "
             + "AND r.createdAt > :since AND r.parentId IN ("
-            + "SELECT p.id FROM Comment p WHERE p.authorId = :authorId)")
+            + "SELECT p.id FROM Comment p WHERE p.authorId = :authorId "
+            + "AND p.status = club.ttg.comment.model.CommentStatus.PUBLISHED)")
     long countRepliesToAuthorSince(
             @Param("authorId") UUID authorId,
             @Param("sourcePlatform") SourcePlatform sourcePlatform,
@@ -329,7 +347,8 @@ public interface CommentRepository extends JpaRepository<Comment, UUID>
     @Query("SELECT MAX(r.createdAt) FROM Comment r WHERE r.authorId <> :authorId "
             + "AND r.status = club.ttg.comment.model.CommentStatus.PUBLISHED "
             + "AND (:sourcePlatform IS NULL OR r.sourcePlatform = :sourcePlatform) "
-            + "AND r.parentId IN (SELECT p.id FROM Comment p WHERE p.authorId = :authorId)")
+            + "AND r.parentId IN (SELECT p.id FROM Comment p WHERE p.authorId = :authorId "
+            + "AND p.status = club.ttg.comment.model.CommentStatus.PUBLISHED)")
     OffsetDateTime findLastReplyAtToAuthor(
             @Param("authorId") UUID authorId,
             @Param("sourcePlatform") SourcePlatform sourcePlatform

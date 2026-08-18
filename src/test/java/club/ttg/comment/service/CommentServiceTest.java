@@ -901,7 +901,7 @@ class CommentServiceTest
         final Comment answered = authoredBy(authorId);
         final Comment untouched = authoredBy(authorId);
 
-        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
+        when(commentRepository.findPublishedByAuthorId(eq(authorId), any(), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(answered, untouched)));
 
         final OffsetDateTime lastReplyAt = OffsetDateTime.parse("2026-08-18T10:00:00Z");
@@ -938,27 +938,19 @@ class CommentServiceTest
     }
 
     @Test
-    void myDeletedCommentKeepsItsTextForItsAuthor()
+    void myCommentsComeFromPublishedOnlyQuery()
     {
         final UUID authorId = UUID.randomUUID();
-        final Comment deleted = authoredBy(authorId);
-        deleted.markAsDeleted();
 
-        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(deleted)));
+        when(commentRepository.findPublishedByAuthorId(any(), any(), any(Pageable.class)))
+                .thenReturn(Page.empty());
 
-        final Page<MyCommentResponse> page = commentService.getMyComments(
-                authorId,
-                null,
-                MyCommentsFilter.ALL,
-                null,
-                PageRequest.of(0, 20)
-        );
+        commentService.getMyComments(authorId, null, MyCommentsFilter.ALL, null, PageRequest.of(0, 20));
 
-        // Маскировка надгробием — правило публичных выдач: своё удалённое автор видит целиком.
-        final MyCommentResponse response = myResponseFor(page, deleted.getId());
-        assertThat(response.getContent()).isEqualTo("текст");
-        assertThat(response.getStatus()).isEqualTo(CommentStatus.DELETED);
+        // Раздел показывает живой вклад: удалённое самим пользователем и скрытое в него
+        // не попадает, поэтому лента модерации здесь не годится.
+        verify(commentRepository).findPublishedByAuthorId(eq(authorId), eq(null), any(Pageable.class));
+        verify(commentRepository, never()).findForModeration(any(), any(), any(Pageable.class));
     }
 
     @Test
@@ -966,7 +958,7 @@ class CommentServiceTest
     {
         final UUID authorId = UUID.randomUUID();
 
-        when(commentRepository.findForModeration(any(), eq(authorId), any(Pageable.class)))
+        when(commentRepository.findPublishedByAuthorId(eq(authorId), any(), any(Pageable.class)))
                 .thenReturn(Page.empty());
 
         assertThat(commentService.getMyComments(authorId, null, MyCommentsFilter.ALL, null, PageRequest.of(0, 20)))
