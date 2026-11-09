@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.m2 \
 
 COPY --link src src
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn package -B -DskipTests
+    mvn package -B
 
 RUN mkdir -p target/dependency && (cd target/dependency; jar -xf ../comment.ttg.club.jar)
 
