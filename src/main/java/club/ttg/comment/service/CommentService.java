@@ -42,6 +42,7 @@ public class CommentService
     private final CommentComplaintRepository commentComplaintRepository;
     private final CommentMapper commentMapper;
     private final CommentRateLimitService commentRateLimitService;
+    private final PageUrlResolver pageUrlResolver;
 
     /**
      * Потолок размера страницы публичной ленты. Ручка открыта без авторизации, и без
@@ -75,7 +76,7 @@ public class CommentService
         return commentRepository.findVisibleRootComments(
                 normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
-                normalize(url),
+                currentUrl(sourcePlatform, section, url),
                 pageable
         ).map(this::buildPublicResponse);
     }
@@ -202,7 +203,7 @@ public class CommentService
         return commentRepository.countBySourcePlatformAndSectionAndUrlAndStatus(
                 normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
-                normalize(url),
+                currentUrl(sourcePlatform, section, url),
                 CommentStatus.PUBLISHED
         );
     }
@@ -400,7 +401,7 @@ public class CommentService
         return commentRepository.findFirstBySourcePlatformAndSectionAndUrlAndStatusOrderByCreatedAtDescIdDesc(
                 normalizeSourcePlatform(sourcePlatform),
                 normalize(section),
-                normalize(url),
+                currentUrl(sourcePlatform, section, url),
                 CommentStatus.PUBLISHED
         ).map(this::buildResponse);
     }
@@ -874,9 +875,18 @@ public class CommentService
         final CreateCommentRequest normalizedRequest = new CreateCommentRequest();
         normalizedRequest.setSourcePlatform(normalizeSourcePlatform(request.getSourcePlatform()));
         normalizedRequest.setSection(normalize(request.getSection()));
-        normalizedRequest.setUrl(normalize(request.getUrl()));
+        normalizedRequest.setUrl(currentUrl(request.getSourcePlatform(), request.getSection(), request.getUrl()));
         normalizedRequest.setContent(normalizeContent(request.getContent()));
         return normalizedRequest;
+    }
+
+    /**
+     * Нормализованный адрес страницы, приведённый к текущему: запрос по прежнему адресу
+     * записи каталога читает и пишет обсуждение её нового адреса ({@link PageUrlResolver}).
+     */
+    private String currentUrl(final SourcePlatform sourcePlatform, final String section, final String url)
+    {
+        return pageUrlResolver.resolve(normalizeSourcePlatform(sourcePlatform), normalize(section), normalize(url));
     }
 
     private String normalize(final String value)

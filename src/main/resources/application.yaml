@@ -47,3 +47,15 @@ comments:
     block-duration: 3h
     violation-decay: 1h
 
+
+# core-api — каталог сайта 2024. Отсюда сервис берёт прежние адреса записей
+# (GET /api/internal/url-history, заголовок X-Service-Token = internal.service-secret)
+# и переносит обсуждения на новый адрес страницы после смены акронима источника.
+# Пустой CORE_API_URL выключает синхронизацию: сервис работает, но без переноса.
+core-api:
+  base-url: ${CORE_API_URL:}
+  connect-timeout: ${CORE_API_CONNECT_TIMEOUT:2s}
+  read-timeout: ${CORE_API_READ_TIMEOUT:10s}
+  url-history:
+    sync-interval: ${URL_HISTORY_SYNC_INTERVAL:5m}
+    overlap: 10m

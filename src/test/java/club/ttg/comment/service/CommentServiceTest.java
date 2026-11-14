@@ -12,6 +12,7 @@ import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.model.SourcePlatform;
+import club.ttg.comment.repository.PageUrlAliasRepository;
 import club.ttg.comment.repository.CommentComplaintRepository;
 import club.ttg.comment.repository.CommentReplyAggregate;
 import club.ttg.comment.repository.CommentRepository;
@@ -64,7 +65,8 @@ class CommentServiceTest
                 commentRepository,
                 complaintRepository,
                 new CommentMapperImpl(),
-                mock(CommentRateLimitService.class)
+                mock(CommentRateLimitService.class),
+                new PageUrlResolver(mock(PageUrlAliasRepository.class))
         );
 
         when(commentRepository.save(any(Comment.class))).thenAnswer(invocation -> invocation.getArgument(0));

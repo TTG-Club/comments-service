@@ -1,0 +1,53 @@
+databaseChangeLog:
+  - changeSet:
+      id: create-page-url-aliases-table
+      author: ttg
+      comment: >-
+        Прежние адреса страниц: «старый url → текущий» в пределах платформы и
+        раздела. Адреса записей каталога меняет core-api (смена акронима
+        источника: /spells/fireball-phb → /spells/fireball-ph), а обсуждение
+        привязано к url страницы — без переноса оно осталось бы под старым
+        адресом, и страница с новым показывала бы пустую ленту.
+        Таблица — локальная копия entity_url_history из core-api (сервис
+        синхронизирует её по ручке /api/internal/url-history): по ней
+        комментарии переносятся на новый адрес, а запросы, пришедшие ещё по
+        старому, отвечают за новый. Цепочки схлопнуты — new_url всегда
+        текущий, поэтому достаточно одного поиска по ключу.
+        changed_at — момент смены из core-api, по максимальному значению
+        сервис продолжает синхронизацию (курсор since).
+      changes:
+        - createTable:
+            schemaName: comment
+            tableName: page_url_aliases
+            columns:
+              - column:
+                  name: source_platform
+                  type: varchar(50)
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_page_url_aliases
+                    nullable: false
+              - column:
+                  name: section
+                  type: varchar(100)
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_page_url_aliases
+                    nullable: false
+              - column:
+                  name: old_url
+                  type: varchar(255)
+                  constraints:
+                    primaryKey: true
+                    primaryKeyName: pk_page_url_aliases
+                    nullable: false
+              - column:
+                  name: new_url
+                  type: varchar(255)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: changed_at
+                  type: TIMESTAMP WITH TIME ZONE
+                  constraints:
+                    nullable: false

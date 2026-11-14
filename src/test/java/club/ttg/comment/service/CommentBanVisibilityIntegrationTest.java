@@ -7,6 +7,7 @@ import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
 import club.ttg.comment.model.SourcePlatform;
 import club.ttg.comment.repository.CommentRepository;
+import club.ttg.comment.repository.PageUrlAliasRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,7 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @Testcontainers(disabledWithoutDocker = true)
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({CommentService.class, CommentMapperImpl.class, CommentRateLimitService.class, RateLimitConfig.class})
+@Import({CommentService.class, CommentMapperImpl.class, CommentRateLimitService.class, RateLimitConfig.class,
+        PageUrlResolver.class, PageUrlAliasRepository.class})
 class CommentBanVisibilityIntegrationTest
 {
     @Container

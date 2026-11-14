@@ -3,6 +3,7 @@ package club.ttg.comment.service;
 import club.ttg.comment.mapper.CommentMapperImpl;
 import club.ttg.comment.model.Comment;
 import club.ttg.comment.model.CommentStatus;
+import club.ttg.comment.repository.PageUrlAliasRepository;
 import club.ttg.comment.repository.CommentComplaintRepository;
 import club.ttg.comment.repository.CommentRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -41,7 +42,8 @@ class CommentBanVisibilityServiceTest
                 commentRepository,
                 mock(CommentComplaintRepository.class),
                 new CommentMapperImpl(),
-                mock(CommentRateLimitService.class)
+                mock(CommentRateLimitService.class),
+                new PageUrlResolver(mock(PageUrlAliasRepository.class))
         );
     }
 
